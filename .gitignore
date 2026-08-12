@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDEs & OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large Datasets (Auto-downloaded via scripts)
+data/external/
+data/raw/
+
+# Model Weights and Large Binary Artifacts
+artifacts/*.pt
+artifacts/*.parquet
+artifacts/*.csv
+artifacts/*.json
+artifacts/splits/
+
+# Logs & Temp
+*.log
+scratch/
