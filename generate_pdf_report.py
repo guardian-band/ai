@@ -105,7 +105,7 @@ def build_pdf_report():
     # 2 Levels Comparison Cards
     l1_content = [
         Paragraph("<b>🏛️ SEVİYE 1: ORGAN SİSTEMİ RİSKİ</b>", section_h1),
-        Paragraph("<font color='#16A34A'><b>%89.07 Doğruluk</b></font> | <font color='#2563EB'><b>%95.81 AUROC</b></font> | <font color='#7C3AED'><b>0.9175 AUPRC</b></font>", bold_style),
+        Paragraph("<font color='#16A34A'><b>%89.21 Doğruluk</b></font> | <font color='#2563EB'><b>%96.01 AUROC</b></font> | <font color='#7C3AED'><b>0.9216 AUPRC</b></font>", bold_style),
         Spacer(1, 3),
         Paragraph("<b>Görevi:</b> İki ilaç alındığında <b>15 temel organ sisteminin</b> hangisinde hasar riski olduğunu tespit eder.", body_style),
         Spacer(1, 3),
@@ -123,7 +123,7 @@ def build_pdf_report():
     
     l2_content = [
         Paragraph("<b>🔬 SEVİYE 2: SPESİFİK YAN ETKİ TEŞHİSİ</b>", section_h1),
-        Paragraph("<font color='#16A34A'><b>%88.81 AUROC</b></font> | <font color='#7C3AED'><b>0.5332 AUPRC</b></font> | <font color='#2563EB'><b>SIDER 4.1 Priors</b></font>", bold_style),
+        Paragraph("<font color='#16A34A'><b>%88.43 AUROC</b></font> | <font color='#7C3AED'><b>0.5147 AUPRC</b></font> | <font color='#2563EB'><b>0.2543 P@5</b></font>", bold_style),
         Spacer(1, 3),
         Paragraph("<b>Görevi:</b> <b>Hiyerarşik Koşullu Maskeleme (Gating)</b> ile tehlikedeki organ altındaki 100 spesifik klinik tanıyı puanlar.", body_style),
         Spacer(1, 3),
