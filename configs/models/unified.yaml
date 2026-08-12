@@ -1,0 +1,11 @@
+model_type: unified
+description: Current tensor/MLP decoder, migrated to the new trainer without changing its model math.
+encoder:
+  type: rgcn
+  dimensions: 64
+decoder:
+  type: tensor_mlp
+  dimensions: 64
+features:
+  - fasttext
+  - primekg_edges

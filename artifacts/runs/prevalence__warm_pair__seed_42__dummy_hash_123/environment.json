@@ -1,0 +1,17 @@
+{
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python_version": "3.12.6 (v3.12.6:a4a2d2b0d85, Sep  6 2024, 16:08:03) [Clang 13.0.0 (clang-1300.0.29.30)]",
+  "device": "mps",
+  "packages": {
+    "torch": "2.13.0",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "scikit_learn": "1.9.0",
+    "rdkit": "2026.03.5",
+    "transformers": "5.15.0"
+  },
+  "git": {
+    "sha": "23157e95b87343ea250139663ffe4a44b1672945",
+    "dirty": true
+  }
+}

@@ -1,0 +1,6 @@
+{
+    "benchmark_id": "polypharmacy_v1",
+    "seed": 42,
+    "scenario": "warm_pair",
+    "manifest_hash": "2496a75f159a"
+}

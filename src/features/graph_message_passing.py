@@ -1,4 +1,6 @@
 """
+from src.training.reproducibility import repository_root
+
 Pre-Computed Graph Message Passing: Drug → Protein → Drug & Drug → Disease → Drug
 Enriches each drug's feature vector with aggregated neighborhood information
 from the PrimeKG biological knowledge graph WITHOUT loading the graph into GPU.
@@ -10,7 +12,7 @@ import pandas as pd
 from collections import defaultdict
 
 def build_graph_enriched_features(
-    base_dir="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai",
+    base_dir=str(repository_root()) + "",
     n_hops=2
 ):
     print("="*65)

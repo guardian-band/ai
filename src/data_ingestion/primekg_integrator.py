@@ -1,4 +1,6 @@
 import os
+from src.training.reproducibility import repository_root
+
 import json
 import pandas as pd
 import numpy as np
@@ -39,7 +41,7 @@ def integrate_primekg(primekg_path, output_dir):
     return summary
 
 if __name__ == "__main__":
-    base_dir = "/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai"
+    base_dir = str(repository_root()) + ""
     primekg_file = os.path.join(base_dir, "data/external/primekg_kg.csv")
     out_dir = os.path.join(base_dir, "artifacts")
     integrate_primekg(primekg_file, out_dir)

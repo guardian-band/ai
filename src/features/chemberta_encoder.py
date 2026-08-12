@@ -1,4 +1,6 @@
 import os
+from src.training.reproducibility import repository_root
+
 import time
 import numpy as np
 import pandas as pd
@@ -6,9 +8,9 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 
 def extract_chemberta_embeddings(
-    drugs_master_path="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/data/raw/drugs_master.csv",
-    existing_features_path="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/artifacts/drug_features.parquet",
-    output_path="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/artifacts/drug_features_chemberta.parquet",
+    drugs_master_path=str(repository_root()) + "/data/raw/drugs_master.csv",
+    existing_features_path=str(repository_root()) + "/artifacts/drug_features.parquet",
+    output_path=str(repository_root()) + "/artifacts/drug_features_chemberta.parquet",
     model_name="DeepChem/ChemBERTa-77M-MTR",
     batch_size=128
 ):

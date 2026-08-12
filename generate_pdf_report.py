@@ -1,4 +1,6 @@
 import os
+from src.training.reproducibility import repository_root
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import (
@@ -9,7 +11,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 def build_pdf_report():
-    pdf_path = "/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/Polypharmacy_AI_2_Seviyeli_Model_Rehberi.pdf"
+    pdf_path = str(repository_root()) + "/Polypharmacy_AI_2_Seviyeli_Model_Rehberi.pdf"
     
     pdfmetrics.registerFont(TTFont('Arial', '/System/Library/Fonts/Supplemental/Arial.ttf'))
     pdfmetrics.registerFont(TTFont('Arial-Bold', '/System/Library/Fonts/Supplemental/Arial Bold.ttf'))

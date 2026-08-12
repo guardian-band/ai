@@ -1,0 +1,17 @@
+model_type: advanced
+description: Advanced architecture combining hierarchy, SIDER, mean ChemBERTa, token cross-attention, and Leakage-Safe PrimeKG.
+encoder:
+  type: advanced_encoder
+  dimensions: 256
+  cross_attention_heads: 4
+decoder:
+  type: advanced_decoder
+  dimensions: 128
+features:
+  - sider_priors
+  - chemberta_tokens
+  - chemberta_mean
+  - primekg_safe_embeddings
+loss:
+  type: nnpu
+  hierarchy_consistency: true

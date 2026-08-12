@@ -1,4 +1,6 @@
 import os
+from src.training.reproducibility import repository_root
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import (
@@ -49,7 +51,7 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
 def generate_architecture_report_pdf():
-    pdf_path = "/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/Polypharmacy_AI_Mimari_Raporu.pdf"
+    pdf_path = str(repository_root()) + "/Polypharmacy_AI_Mimari_Raporu.pdf"
     
     # Register TrueType Fonts
     pdfmetrics.registerFont(TTFont('Arial', '/System/Library/Fonts/Supplemental/Arial.ttf'))

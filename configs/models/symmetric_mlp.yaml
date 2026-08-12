@@ -1,0 +1,10 @@
+model_type: symmetric_mlp
+description: Shared drug encoder plus [sum, abs-diff, product]; no hierarchy, SIDER, ChemBERTa, or PrimeKG.
+encoder:
+  layers: [256, 128]
+  dropout: 0.1
+decoder:
+  layers: [128, 64]
+  dropout: 0.1
+features:
+  - morgan_fingerprints

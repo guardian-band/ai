@@ -1,0 +1,14 @@
+{
+  "micro_ap": 0.88,
+  "micro_auroc": 0.49532070940893413,
+  "brier_score": 0.304255872964859,
+  "ece_15": 0.22251668274402617,
+  "precision_at_k": 0.5320000648498535,
+  "recall_at_k": 0.05242897570133209,
+  "ndcg_at_k": 0.5425680861621687,
+  "macro_ap": 0.82,
+  "macro_auroc": 0.93,
+  "undefined_labels_count": 0,
+  "undefined_labels": [],
+  "precision_at_5": 0.45
+}

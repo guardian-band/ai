@@ -1,11 +1,13 @@
 import os
+from src.training.reproducibility import repository_root
+
 import json
 import numpy as np
 import pandas as pd
 
 def generate_benchmark_summary_reports(
-    results_dir="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/results",
-    runs_dir="/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai/artifacts/runs"
+    results_dir=str(repository_root()) + "/results",
+    runs_dir=str(repository_root()) + "/artifacts/runs"
 ):
     """
     Reads run results across seeds and generates authoritative benchmark_summary.json and benchmark_summary.csv.
@@ -49,5 +51,5 @@ def generate_benchmark_summary_reports(
     return json_path
 
 if __name__ == "__main__":
-    base = "/Users/acelyayildiz/.gemini/antigravity/scratch/polypharmacy_ai"
+    base = str(repository_root()) + ""
     generate_benchmark_summary_reports(os.path.join(base, "results"))

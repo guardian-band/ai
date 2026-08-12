@@ -1,0 +1,2 @@
+model_type: prevalence
+description: Baseline that predicts train label prevalence for every pair.
