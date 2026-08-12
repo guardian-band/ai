@@ -1,0 +1,18 @@
+model_name: "token_cross_attention"
+chemberta_checkpoint: "DeepChem/ChemBERTa-77M-MTR"
+hidden_dim: 256
+embedding_dim: 128
+num_heads: 4
+dropout: 0.15
+num_socs: 15
+num_specific: 100
+fusion_type: "additive_log_odds"
+optimizer:
+  type: "adamw"
+  lr: 0.0015
+  weight_decay: 0.00001
+scheduler:
+  type: "cosine"
+  t_max: 25
+batch_size: 256
+epochs: 25

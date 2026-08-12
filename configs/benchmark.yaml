@@ -1,0 +1,19 @@
+benchmark_id: "bench_v1"
+seeds: [42, 101, 2024, 31415, 27182]
+primary_seed: 42
+splits:
+  warm: true
+  cold_1: true
+  cold_2: true
+  scaffold: false
+top_k_labels: 100
+negative_sampling:
+  ratio: 1.0
+  degree_matching: true
+  pu_correction: true
+data_paths:
+  drugs_master: "data/raw/drugs_master.csv"
+  side_effects: "data/raw/side_effects.csv"
+  biosnap_ddi: "data/external/ChChSe-Decagon_polypharmacy.csv"
+  sider: "data/external/meddra_all_se.tsv"
+  primekg: "data/external/primekg_kg.csv"
