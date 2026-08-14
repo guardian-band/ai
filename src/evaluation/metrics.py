@@ -137,8 +137,12 @@ def compute_all_metrics(
     undefined_labels = []
     
     for col in y_true.columns:
-        yt = y_true[col].dropna().values
-        yp = y_prob[col].dropna().values
+        # Keep truth/probability rows aligned when either side contains a
+        # missing value.  Dropping each series independently can silently pair
+        # one pair's truth with another pair's probability.
+        aligned = y_true[col].notna() & y_prob[col].notna()
+        yt = y_true.loc[aligned, col].values
+        yp = y_prob.loc[aligned, col].values
         
         if len(np.unique(yt)) < 2:
             undefined_labels.append(col)
@@ -170,6 +174,9 @@ def compute_all_metrics(
         
     results["macro_ap"] = np.mean(label_aps) if label_aps else float('nan')
     results["macro_auroc"] = np.mean(label_aurocs) if label_aurocs else float('nan')
+    # Expose the per-label values for auditable persistence.  Keep the
+    # evaluator's scalar output unchanged for existing callers.
+    results["per_label_metrics"] = per_label_metrics
     
     results["undefined_labels_count"] = len(undefined_labels)
     results["undefined_labels"] = undefined_labels

@@ -17,8 +17,14 @@ def warm_pair_split(pairs_df: pd.DataFrame, train_frac=0.7, val_frac=0.15, seed=
     indices = np.arange(n_pairs)
     rng.shuffle(indices)
     
-    n_train = int(n_pairs * train_frac)
-    n_val = int(n_pairs * val_frac)
+    if n_pairs < 3:
+        raise ValueError("warm_pair requires at least three unique positive pairs")
+    n_train = max(1, int(n_pairs * train_frac))
+    n_val = max(1, int(n_pairs * val_frac))
+    if n_train + n_val >= n_pairs:
+        n_val = max(1, n_pairs - n_train - 1)
+        if n_train + n_val >= n_pairs:
+            n_train = n_pairs - 2
     
     train_idx = indices[:n_train]
     val_idx = indices[n_train:n_train+n_val]
@@ -72,9 +78,12 @@ def warm_pair_split(pairs_df: pd.DataFrame, train_frac=0.7, val_frac=0.15, seed=
 
 def cold_drug_partition(pairs_df: pd.DataFrame, train_frac=0.7, val_frac=0.1, seed=42) -> Tuple[set, set, set]:
     """
-    Partitions drugs into train, validation_new, test_new using degree deciles.
+    Partitions drugs into train, validation_new, test_new using deterministic
+    degree-ordered assignment that remains defined for small drug sets.
     """
     rng = np.random.default_rng(seed)
+    if not 0 < train_frac < 1 or not 0 < val_frac < 1 or train_frac + val_frac >= 1:
+        raise ValueError("cold partition fractions must be positive and sum to less than one")
     
     # 1. Compute positive-pair degree
     drugs_a = pairs_df['drug_a'].value_counts()
@@ -84,24 +93,35 @@ def cold_drug_partition(pairs_df: pd.DataFrame, train_frac=0.7, val_frac=0.1, se
     drug_df = pd.DataFrame({'drug_id': degree.index, 'degree': degree.values})
     
     # 2. Bin drugs into deciles with deterministic tie handling
-    drug_df = drug_df.sort_values(by=['degree', 'drug_id'])
-    drug_df['decile'] = pd.qcut(drug_df['degree'].rank(method='first'), 10, labels=False)
-    
-    train_drugs = []
-    val_drugs = []
-    test_drugs = []
-    
-    for _, group in drug_df.groupby('decile'):
-        drugs = group['drug_id'].values
+    if len(drug_df) < 3:
+        raise ValueError("cold partition requires at least three unique drugs")
+
+    # qcut cannot form ten non-empty bins for small drug sets.  Use robust
+    # degree-rank bins (at most ten, with at least roughly three drugs per
+    # usable bin), shuffle a real NumPy copy, and apportion each bin.
+    train_drugs, val_drugs, test_drugs = [], [], []
+    drug_df = drug_df.sort_values(by=["degree", "drug_id"]).reset_index(drop=True)
+    ordered_drugs = drug_df["drug_id"].to_numpy(copy=True)
+    usable_count = max(1, len(ordered_drugs) // 3)
+    n_bins = min(10, usable_count)
+    for group_array in np.array_split(ordered_drugs, n_bins):
+        drugs = np.asarray(group_array, dtype=object).copy()
         rng.shuffle(drugs)
         n = len(drugs)
-        n_tr = int(n * train_frac)
-        n_va = int(n * val_frac)
-        
-        train_drugs.extend(drugs[:n_tr])
-        val_drugs.extend(drugs[n_tr:n_tr+n_va])
-        test_drugs.extend(drugs[n_tr+n_va:])
-        
+        if n < 3:
+            n_train = 1 if n else 0
+            n_val = 1 if n >= 2 else 0
+        else:
+            n_train = max(1, int(np.floor(n * train_frac)))
+            n_val = max(1, int(np.floor(n * val_frac)))
+            if n_train + n_val >= n:
+                n_val = 1
+                n_train = n - 2
+        train_drugs.extend(drugs[:n_train])
+        val_drugs.extend(drugs[n_train:n_train + n_val])
+        test_drugs.extend(drugs[n_train + n_val:])
+    if not train_drugs or not val_drugs or not test_drugs:
+        raise ValueError("cold partition produced an empty global drug partition")
     return set(train_drugs), set(val_drugs), set(test_drugs)
 
 def generate_cold_splits(pairs_df: pd.DataFrame, scenario: str, train_drugs: set, val_drugs: set, test_drugs: set) -> pd.DataFrame:

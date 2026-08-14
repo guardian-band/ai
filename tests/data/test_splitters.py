@@ -76,3 +76,36 @@ def test_cold_partitions(dummy_pairs):
     assert check_no_overlap(tr_c2, va_c2, te_c2)
     assert check_no_test_new_in_train_val(tr_c2, va_c2, te_d)
     assert check_cold_2_test_endpoints(te_c2, te_d)
+
+
+def test_cold_drug_partition_handles_small_drug_sets_without_qcut_failure():
+    pairs = pd.DataFrame(
+        [
+            {"pair_id": f"p{i}", "drug_a": f"D{i}", "drug_b": f"D{i + 1}", "label_cui": "C001"}
+            for i in range(1, 6)
+        ]
+    )
+    train, validation, test = cold_drug_partition(pairs, train_frac=0.5, val_frac=0.25, seed=7)
+    assert train and validation and test
+    assert not (train & validation or train & test or validation & test)
+
+
+def test_cold_drug_partition_apportions_each_degree_stratum_deterministically():
+    rows = []
+    pid = 0
+    for base, degree in [(0, 1), (10, 2), (20, 3)]:
+        for offset in range(6):
+            drug = f"D{base + offset:02d}"
+            for edge in range(degree):
+                other = f"X{base + offset}_{edge}"
+                rows.append({"pair_id": f"p{pid}", "drug_a": drug, "drug_b": other, "label_cui": "C001"})
+                pid += 1
+    frame = pd.DataFrame(rows)
+    first = cold_drug_partition(frame, train_frac=0.5, val_frac=0.25, seed=9)
+    second = cold_drug_partition(frame, train_frac=0.5, val_frac=0.25, seed=9)
+    assert first == second
+    degree = frame["drug_a"].value_counts().add(frame["drug_b"].value_counts(), fill_value=0)
+    for group in [set(degree[degree == value].index) for value in sorted(degree.unique()) if (degree == value).sum() >= 3]:
+        assert group & first[0]
+        assert group & first[1]
+        assert group & first[2]

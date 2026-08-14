@@ -40,3 +40,5 @@ def test_generate_negative_samples():
     # Ensure properties carried over
     assert set(controls['split']) == {'train'}
     assert set(controls['scenario']) == {'warm_pair'}
+    assert controls['pair_id'].is_unique
+    assert all(controls['pair_id'] != controls['source_positive_pair_id'])

@@ -1,6 +1,0 @@
-{
-  "experiment": "configs/models/unified.yaml",
-  "benchmark_id": "polypharmacy_v1",
-  "scenario": "warm_pair",
-  "seed": 42
-}

@@ -2,7 +2,12 @@ import pytest
 import os
 import json
 import tempfile
-from src.training.engine import StateGuardedTrainer, TrainerState, verify_manifest
+from src.training.engine import (
+    REQUIRED_RUN_ARTIFACTS,
+    StateGuardedTrainer,
+    TrainerState,
+    verify_manifest,
+)
 
 def test_trainer_state_guards():
     with tempfile.TemporaryDirectory() as td:
@@ -55,3 +60,37 @@ def test_verify_manifest():
             
         with pytest.raises(ValueError, match="Manifest hash mismatch"):
             verify_manifest(path)
+
+
+def test_completion_marker_proves_required_artifact_bytes():
+    with tempfile.TemporaryDirectory() as td:
+        for artifact in REQUIRED_RUN_ARTIFACTS:
+            path = os.path.join(td, artifact)
+            with open(path, "wb") as stream:
+                stream.write(artifact.encode())
+        trainer = StateGuardedTrainer(td)
+        trainer.begin_training()
+        trainer.model_selected()
+        trainer.validation_frozen()
+        trainer.evaluate_test()
+        trainer.complete({"macro_ap": 0.5}, required_artifacts=REQUIRED_RUN_ARTIFACTS)
+
+        with open(os.path.join(td, "completion.json")) as stream:
+            marker = json.load(stream)
+        assert marker["status"] == "complete"
+        assert set(marker["required_artifacts"]) == set(REQUIRED_RUN_ARTIFACTS)
+        assert marker["required_artifacts"]["metrics.json"]["bytes"] == os.path.getsize(
+            os.path.join(td, "metrics.json")
+        )
+
+
+def test_missing_required_artifact_cannot_leave_complete_marker():
+    with tempfile.TemporaryDirectory() as td:
+        trainer = StateGuardedTrainer(td)
+        trainer.begin_training()
+        trainer.model_selected()
+        trainer.validation_frozen()
+        trainer.evaluate_test()
+        with pytest.raises(FileNotFoundError, match="required artifact"):
+            trainer.complete({"macro_ap": 0.5}, required_artifacts=REQUIRED_RUN_ARTIFACTS)
+        assert not os.path.exists(os.path.join(td, "completion.json"))
