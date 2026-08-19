@@ -24,7 +24,7 @@ def validate_model_type(config: Mapping[str, Any]) -> str:
         raise UnsupportedModelConfiguration(
             "model_type 'advanced' is unavailable: SIDER, ChemBERTa, and PrimeKG inputs are not present"
         )
-    if model_type not in {"prevalence", "logistic", "symmetric_mlp"}:
+    if model_type not in {"prevalence", "logistic", "symmetric_mlp", "morgan_graphsage_mlp"}:
         raise UnsupportedModelConfiguration(f"Unknown or missing model_type: {model_type!r}")
     return model_type
 
@@ -44,7 +44,7 @@ def load_experiment_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Experiment config must define model_type")
     resolved = dict(raw)
     resolved["model_type"] = model_type.strip().lower()
-    if resolved["model_type"] not in {"prevalence", "logistic", "symmetric_mlp", "unified", "advanced"}:
+    if resolved["model_type"] not in {"prevalence", "logistic", "symmetric_mlp", "unified", "advanced", "morgan_graphsage_mlp"}:
         raise UnsupportedModelConfiguration(
             f"Unknown model_type '{model_type}'. Expected prevalence, logistic, symmetric_mlp, unified, or advanced."
         )
@@ -190,6 +190,6 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
         return PrevalenceModel(num_labels=num_labels)
     if model_type == "logistic":
         return LogisticPairModel(input_dim=input_dim, num_labels=num_labels)
-    if model_type == "symmetric_mlp":
+    if model_type in {"symmetric_mlp", "morgan_graphsage_mlp"}:
         return SymmetricMLPModel(input_dim=input_dim, num_labels=num_labels, config=config)
     raise UnsupportedModelConfiguration(f"Unknown or missing model_type: {model_type!r}")

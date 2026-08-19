@@ -18,6 +18,7 @@ from typing import Any, Mapping
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+import numpy as np
 
 
 PAIR_COLUMNS = {
@@ -86,15 +87,21 @@ def _normalize_status(value: Any) -> str:
     return str(value).strip().lower()
 
 
-def _id_tokens(drug_id: str, token_length: int = 20, feature_dim: int = 768) -> torch.Tensor:
-    """Return reproducible token-shaped features derived only from ``drug_id``."""
-
-    tokens = []
-    for token_index in range(token_length):
-        digest = hashlib.sha256(f"{drug_id}\0{token_index}".encode("utf-8")).digest()
-        repeated = (digest * ((feature_dim + len(digest) - 1) // len(digest)))[:feature_dim]
-        tokens.append([(byte / 127.5) - 1.0 for byte in repeated])
-    return torch.tensor(tokens, dtype=torch.float32)
+def _load_drug_features(parquet_path: Path) -> dict[str, torch.Tensor]:
+    try:
+        df = pd.read_parquet(parquet_path)
+    except Exception as exc:
+        raise ValueError(f"Unable to read drug features at {parquet_path}: {exc}") from exc
+    
+    if "drugbank_id" not in df.columns or "morgan_fingerprint" not in df.columns:
+        raise ValueError("Parquet must contain drugbank_id and morgan_fingerprint columns")
+        
+    features = {}
+    for row in df.itertuples(index=False):
+        fp = np.array(row.morgan_fingerprint, dtype=np.float32)
+        # Shape (1, feature_dim) to mimic token sequence of length 1
+        features[str(row.drugbank_id)] = torch.tensor(fp).unsqueeze(0)
+    return features
 
 
 class ManifestPolypharmacyDataset(Dataset):
@@ -104,14 +111,23 @@ class ManifestPolypharmacyDataset(Dataset):
         self,
         records: list[dict[str, Any]],
         labels: list[dict[str, Any]],
-        token_length: int = 20,
-        feature_dim: int = 768,
+        drug_features_path: Path | str | None = None,
     ):
-        self.records = records
+        if not drug_features_path:
+            raise ValueError("drug_features_path is required")
+        
         self.labels = labels
-        self.token_length = token_length
-        self.feature_dim = feature_dim
-        self._feature_cache: dict[str, torch.Tensor] = {}
+        self.drug_features = _load_drug_features(Path(drug_features_path))
+        
+        # Filter records that lack features
+        valid_records = []
+        for r in records:
+            if r["drug_a"] in self.drug_features and r["drug_b"] in self.drug_features:
+                valid_records.append(r)
+        self.records = valid_records
+        
+        # We enforce token length 1 for our flat vectors to work with _masked_mean
+        self.token_length = 1
 
     @classmethod
     def from_manifest(
@@ -120,8 +136,7 @@ class ManifestPolypharmacyDataset(Dataset):
         manifest: Mapping[str, Any],
         split: str,
         *,
-        token_length: int = 20,
-        feature_dim: int = 768,
+        drug_features_path: Path | str | None = None,
     ) -> "ManifestPolypharmacyDataset":
         if split not in VALID_SPLITS:
             raise ValueError(f"split must be one of {sorted(VALID_SPLITS)}")
@@ -190,17 +205,13 @@ class ManifestPolypharmacyDataset(Dataset):
                     "is_observed_positive": is_positive,
                 }
             )
-        return cls(records, labels, token_length=token_length, feature_dim=feature_dim)
+        return cls(records, labels, drug_features_path=drug_features_path)
 
     def __len__(self) -> int:
         return len(self.records)
 
     def _features_for(self, drug_id: str) -> torch.Tensor:
-        if drug_id not in self._feature_cache:
-            self._feature_cache[drug_id] = _id_tokens(
-                drug_id, token_length=self.token_length, feature_dim=self.feature_dim
-            )
-        return self._feature_cache[drug_id]
+        return self.drug_features[drug_id]
 
     def __getitem__(self, index: int):
         record = self.records[index]

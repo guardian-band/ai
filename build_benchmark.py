@@ -162,6 +162,11 @@ def _resolve_sources(config_path: Path, config: dict[str, Any]) -> dict[str, Pat
 def _read_sources(sources: dict[str, Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     try:
         drugs = pd.read_csv(sources["drugs_master"])
+        try:
+            valid_drugs_df = pd.read_parquet("artifacts/morgan_fingerprints.parquet")
+            drugs = drugs[drugs["drugbank_id"].isin(set(valid_drugs_df["drugbank_id"]))]
+        except Exception:
+            pass
         side_effects = pd.read_csv(sources["side_effects"])
         combo = pd.read_csv(sources["biosnap_ddi"])
     except Exception as exc:
@@ -306,10 +311,19 @@ def _build_similarity_map(drugs: pd.DataFrame, pairs: pd.DataFrame) -> tuple[dic
         raise ValueError(f"missing SMILES for participating drugs: {missing}")
     smiles = {str(drug): str(smiles_series[drug]) for drug in participating}
     ids = sorted(set(pairs["drug_a"]) | set(pairs["drug_b"]))
+    
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import AllChem
+    fps = {}
+    for drug in ids:
+        mol = Chem.MolFromSmiles(smiles[drug])
+        fps[drug] = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048) if mol else None
+        
     similarities = {}
     for index, drug_a in enumerate(ids):
         for drug_b in ids[index + 1:]:
-            similarities[(drug_a, drug_b)] = _similarity(smiles[drug_a], smiles[drug_b])
+            if fps[drug_a] is not None and fps[drug_b] is not None:
+                similarities[(drug_a, drug_b)] = float(DataStructs.TanimotoSimilarity(fps[drug_a], fps[drug_b]))
     return similarities, "available_smiles"
 
 

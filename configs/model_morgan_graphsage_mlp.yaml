@@ -1,0 +1,18 @@
+model_type: morgan_graphsage_mlp
+epochs: 10
+batch_size: 256
+learning_rate: 0.001
+weight_decay: 1e-4
+input_dim: 2176
+drug_features_path: artifacts/morgan_graphsage_features.parquet
+
+encoder:
+  layers:
+    - 512
+    - 256
+    - 128
+
+decoder:
+  layers:
+    - 64
+    - 32

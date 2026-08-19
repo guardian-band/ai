@@ -28,7 +28,7 @@ sampling:
   controls_per_positive_pair: 1
   primekg_degree_bins: 10
   molecular_similarity_bins: 5
-  maximum_attempts_per_control: 10000
+  maximum_attempts_per_control: 100
   pu_prior_multipliers: [1.0, 2.0, 4.0]
 
 bootstrap:

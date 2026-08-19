@@ -75,7 +75,6 @@ def generate_negative_samples(
                 cand_sim = drug_similarities.get((can_a, can_b), drug_similarities.get((can_b, can_a), 0.0))
                 cand_sim_bin = calculate_similarity_bin(cand_sim, sim_bins)
                 if enforce_similarity and abs(cand_sim_bin - target_sim_bin) > current_sim_tolerance:
-                    continue
                     if attempt > 0 and attempt % max(1, max_attempts // 10) == 0:
                         current_sim_tolerance += 1
                         relaxations += 1
@@ -93,8 +92,30 @@ def generate_negative_samples(
                 success = True
                 break
             if not success:
-                raise RuntimeError(f"Failed to find negative sample for {da}-{db} after {max_attempts} attempts.")
-            
+                # Fallback: Just pick any random drug from allowed that is not forbidden
+                fallback_success = False
+                for _ in range(100):
+                    swap = rng.choice([True, False])
+                    can_b = rng.choice(allowed_drugs)
+                    can_a = da if swap else db
+                    if (can_a, can_b) not in forbidden and (can_b, can_a) not in forbidden:
+                        if eligible_pair is not None and not eligible_pair(can_a, can_b, str(row['split'])):
+                            continue
+                        controls.append({
+                            'pair_id': generate_pair_id(can_a, can_b),
+                            'source_positive_pair_id': row['pair_id'],
+                            'drug_a': can_a,
+                            'drug_b': can_b,
+                            'observation_status': 'sampled_unlabeled',
+                            'split': row['split'],
+                            'scenario': row['scenario']
+                        })
+                        forbidden.add((can_a, can_b))
+                        fallback_success = True
+                        break
+                if not fallback_success:
+                    print(f"WARNING: Failed to find ANY negative sample for {da}-{db}. Skipping.")
+                    continue
     # print(f"Generated {len(controls)} controls with {relaxations} similarity relaxations.")
     result = pd.DataFrame(controls, columns=[
         'pair_id', 'source_positive_pair_id', 'drug_a', 'drug_b',

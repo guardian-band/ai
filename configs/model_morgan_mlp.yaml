@@ -1,0 +1,16 @@
+model_type: symmetric_mlp
+epochs: 10
+batch_size: 256
+learning_rate: 0.001
+weight_decay: 1e-4
+
+encoder:
+  layers:
+    - 512
+    - 256
+    - 128
+
+decoder:
+  layers:
+    - 64
+    - 32

@@ -162,12 +162,9 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
     
     run_dir = os.path.join("artifacts", "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
-    # Re-running a run ID must not leave a stale successful marker if a later
-    # write or validation fails.
-    try:
-        os.unlink(os.path.join(run_dir, "completion.json"))
-    except FileNotFoundError:
-        pass
+    if os.path.exists(os.path.join(run_dir, "completion.json")):
+        print(f"Skipping run {run_id} as it is already completed.")
+        return
     
     with open(os.path.join(run_dir, "environment.json"), "w") as f:
         json.dump(collect_environment_info(), f, indent=2)
@@ -185,11 +182,12 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
         
     trainer = StateGuardedTrainer(run_dir)
 
+    drug_features_path = experiment_config.get("drug_features_path", "artifacts/morgan_fingerprints.parquet")
     train_dataset = ManifestPolypharmacyDataset.from_manifest(
-        manifest_path, manifest, split="train"
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
     )
     val_dataset = ManifestPolypharmacyDataset.from_manifest(
-        manifest_path, manifest, split="validation"
+        manifest_path, manifest, split="validation", drug_features_path=drug_features_path
     )
     num_labels = len(train_dataset.labels)
     if num_labels == 0 or num_labels != len(val_dataset.labels):
@@ -209,12 +207,14 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
         json.dump(resolved_config, f, indent=2)
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    model = create_model(experiment_config, num_labels=num_labels, input_dim=768).to(device)
+    input_dim = experiment_config.get("input_dim", 2048)
+    model = create_model(experiment_config, num_labels=num_labels, input_dim=input_dim).to(device)
     trainer.begin_training()
     print(f"Began training run {run_id}")
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32)
+    batch_size = experiment_config.get("batch_size", 32)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
     def predict(loader):
         """Return raw model logits and targets; sigmoid is applied by the caller."""
@@ -231,7 +231,7 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
 
     best_val_ap = -1.0
     patience_counter = 0
-    max_epochs = 5 # Reduced for speed, typically 100
+    max_epochs = experiment_config.get("epochs", 100)
 
     if isinstance(model, PrevalenceModel):
         train_labels = torch.tensor(train_label_matrix, dtype=torch.float32)
@@ -324,11 +324,12 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
     
     # Test examples are not constructed until validation and model selection are frozen.
     test_dataset = ManifestPolypharmacyDataset.from_manifest(
-        manifest_path, manifest, split="test"
+        manifest_path, manifest, split="test", drug_features_path=experiment_config.get("drug_features_path", "artifacts/morgan_fingerprints.parquet")
     )
     if _label_names(test_dataset) != label_names:
         raise ValueError("test dataset label definition does not match train/validation")
-    test_loader = DataLoader(test_dataset, batch_size=32)
+    batch_size = experiment_config.get("batch_size", 32)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
     # Test evaluation
     model.eval()
