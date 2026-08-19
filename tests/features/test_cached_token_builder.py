@@ -12,7 +12,21 @@ HASH_C = "c" * 64
 
 
 def _teacher():
-    return MultiModalTeacher(4, 3, 2, 2, 1, 8, 1, 2, num_heads=2, cache_token_count=3, cache_token_dim=6).eval()
+    return MultiModalTeacher(
+        morgan_dim=4,
+        molformer_dim=3,
+        mpnn_dim=5,
+        kg_dim=2,
+        molformer_token_count=2,
+        mpnn_token_count=3,
+        kg_token_count=1,
+        hidden_dim=8,
+        num_organ=1,
+        num_specific=2,
+        num_heads=2,
+        cache_token_count=3,
+        cache_token_dim=6,
+    ).eval()
 
 
 def _batch(ids):
@@ -21,10 +35,12 @@ def _batch(ids):
         "drug_ids": ids,
         "inputs": {
             "morgan": torch.randn(size, 4),
-            "molecular_tokens": torch.randn(size, 2, 3),
+            "molformer_tokens": torch.randn(size, 2, 3),
+            "mpnn_tokens": torch.randn(size, 3, 5),
             "kg_tokens": torch.randn(size, 1, 2),
             "morgan_available": torch.ones(size, dtype=torch.bool),
-            "molecular_available": torch.ones(size, dtype=torch.bool),
+            "molformer_available": torch.ones(size, dtype=torch.bool),
+            "mpnn_available": torch.ones(size, dtype=torch.bool),
             "kg_available": torch.ones(size, dtype=torch.bool),
         },
     }

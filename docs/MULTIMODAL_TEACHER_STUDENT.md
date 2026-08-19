@@ -1,106 +1,214 @@
-# Multimodal teacher and CPU student
+# Advanced multimodal teacher and CPU student
 
-This repository now contains the model and artifact contracts for a two-stage
-deployment design. It does not contain MolFormer, a molecular MPNN, an HGT,
-PrimeKG preprocessing, pretrained weights, or training outputs.
+## What is implemented
 
-## Offline teacher boundary
+The advanced path is executable end to end. It contains:
 
-`MultiModalTeacher` consumes three validated per-drug inputs:
+1. pinned MolFormer token extraction from canonical SMILES;
+2. a bond-aware molecular MPNN and masked-atom self-supervised trainer;
+3. typed PrimeKG preprocessing with target-leakage relation removal;
+4. an HGT-style relation-aware attention encoder, link pretraining, neighbor
+   sampling, validation selection, and layerwise drug-token export;
+5. a versioned four-modality artifact assembler with exact manifest binding;
+6. the symmetric cross-attention teacher and hierarchical organ/specific heads;
+7. teacher latent-token cache export;
+8. supervised plus logit-distilled CPU student training;
+9. calibrated, thresholded, single-pair CPU inference.
 
-- a Morgan/global chemistry vector;
-- fixed-count molecular tokens;
-- fixed-count PrimeKG/biological tokens.
+The repository does not contain downloaded MolFormer weights, trained MPNN or
+HGT checkpoints, feature artifacts, or benchmark results. Those are outputs of
+the commands below. Their absence does not mean the producer code is missing.
 
-Each modality has an availability mask. The teacher projects the modalities to
-a shared latent space, performs token-level cross-drug attention, and uses
-learned organ and specific-side-effect queries. It emits separate organ and
-specific logits. The public pair function averages both ordered interaction
-passes, so `f(A, B)` and `f(B, A)` are the same model output.
+## Architecture
 
-The upstream producers must provide finite tensors and explicit provenance
-hashes. `run_precomputed_experiment.py` validates those artifacts and every
-manifest split before creating run artifacts; the existing legacy manifest
-runner intentionally rejects these model types because its dataset emits only
-the legacy single feature tensor.
+For each drug, the teacher consumes four independent modalities:
 
-## CPU student boundary
+- Morgan fingerprint: `[2048]`;
+- eight mask-aware segment-pooled MolFormer hidden-state tokens: `[8, 768]`;
+- molecular-MPNN atom tokens: `[32, 256]` by default;
+- PrimeKG-HGT layer tokens: `[layers + 1, 256]` by default.
 
-`DistilledPairStudent` consumes only a fixed `[token_count, token_dim]` latent
-token matrix per drug plus token availability. It has no PyG or Transformers
-runtime dependency. `CPUPairPredictor` loads a validated
-`CachedTokenArtifact`, requires the student to already be in `eval()` mode on
-CPU, looks up one unordered pair, applies stored temperatures once to logits,
-and returns calibrated probabilities, thresholded predictions, and
-deterministically ordered Top-K results.
+Each sequence has an availability flag and a real padding mask. Padding is
+excluded from the learned resampler. A missing sequence contributes one
+learned missing-modality token rather than a repeated padded signal.
 
-The cache format is a versioned `.npz` container with `allow_pickle=False`, a
-canonical payload checksum, and an adjacent file checksum. Writes are atomic.
-Drug IDs are sorted and unique; token arrays are finite float32 values with a
-fixed count and dimension. Metadata records canonical SHA-256 hashes for the
-teacher checkpoint, teacher configuration, and modality provenance. Missing
-IDs and tampered artifacts are rejected.
+The resampler converts the modalities into eight learned `128`-dimensional
+latent tokens per drug. The pair decoder performs token cross-attention in
+both directions. The public output averages the `A→B` and `B→A` ordered
+passes, making the organ and specific-side-effect predictions exactly
+invariant to pair order.
 
-## Known drugs and new drugs
+The CPU student consumes only the cached `[8, 128]` tokens. It does not import
+RDKit, Transformers, PrimeKG, or PyG at inference time.
 
-Known-drug pair inference requires both IDs in the cache and does not load
-PrimeKG or MolFormer. A new SMILES is not silently supported by the CPU pair
-predictor: it must go through a separately provisioned offline feature
-producer, then be added to a newly validated cache. If no biological modality
-is available, the teacher's availability-mask path can still produce finite
-outputs, but that behavior must be measured rather than assumed to improve
-cold-drug performance.
+## Leakage rules
 
-## Required artifacts before training/deployment
+The PrimeKG producer removes relations that directly encode the prediction
+target, including drug-drug, drug-effect, indication, contraindication,
+off-label-use, and synergistic-interaction relations.
 
-Before a real run, provide:
+For every remaining typed relation, message-passing edges, train link labels,
+and validation link labels are disjoint. A held-out edge and its generated
+reverse edge are both absent from the message graph. Negative link labels are
+rejected against the full known positive relation, not sampled blindly.
 
-1. finite, shape-validated Morgan, molecular-token, and KG-token artifacts;
-2. provenance hashes for each upstream modality and the exact multimodal feature artifact file;
-3. a versioned side-effect organ mapping and validation-selected calibration;
-4. a distilled student checkpoint matching the cache token schema;
-5. a `CachedTokenArtifact` plus its `.sha256` sidecar. Its
-   `modality_provenance_hash` must equal the SHA-256 of the exact multimodal
-   feature artifact file used to produce the cache.
+For cold-1 and cold-2, every benchmark drug absent from the downstream train
+split is removed—together with all incident safe KG edges—from HGT pretraining.
+The frozen HGT is then applied to the complete safe KG during export. Thus the
+protocol is encoder-train inductive: no cold drug shapes HGT weights, while
+safe biological neighbors available at inference can still describe it. The
+artifact records this protocol and the excluded-drug count.
 
-The teacher YAML requires `feature_artifact_path`,
-`feature_artifact_sha256`, `hierarchy_path`, and `hierarchy_sha256`, in
-addition to the explicit model and training controls. The student YAML
-requires `cached_token_artifact_path`, `cached_token_artifact_sha256`,
-`teacher_config_path`, `teacher_config_sha256`, `teacher_checkpoint_path`,
-`teacher_checkpoint_sha256`, `hierarchy_path`, and `hierarchy_sha256`, plus
-`supervised_weight` and `distillation_weight`. The feature artifact
-compatibility record must contain the exact `benchmark_id`, `scenario`,
-`seed`, and `manifest_hash`.
+## Artifact chain
 
-No percentage or benchmark result is implied by these code paths. Training and
-benchmark generation remain separate operations and were not run as part of
-this implementation.
+All token and multimodal artifacts are safe NPZ containers loaded with
+`allow_pickle=False`. They require sorted unique drug IDs, finite float32
+arrays, boolean masks, canonical metadata, an internal content digest, and an
+adjacent file SHA-256. The multimodal artifact is bound to the exact
+`benchmark_id`, scenario, seed, and manifest hash.
 
-## Staged execution
+The provenance chain is:
 
-After the upstream producers have supplied real artifacts and their SHA-256
-values have been written into the YAML files, run preflight first:
-
-```bash
-python run_precomputed_experiment.py \
-  --experiment configs/model_multimodal_teacher.yaml \
-  --benchmark artifacts/benchmarks/polypharmacy_v1/warm_pair/seed_42/manifest.json \
-  --dry-run
+```text
+drug table + pinned MolFormer revision ──> MolFormer tokens
+drug table + selected MPNN checkpoint ──> MPNN tokens
+PrimeKG + Morgan + manifest + HGT checkpoint ──> HGT tokens
+all four modalities + exact manifest ──> multimodal feature artifact
+multimodal artifact + selected teacher checkpoint ──> latent-token cache
+cache + teacher checkpoint/config ──> distilled student checkpoint
+student + cache + calibration + thresholds ──> CPU pair prediction
 ```
 
-Then run the teacher, create and validate the cached-token artifact, and place
-its path/hash plus the frozen teacher checkpoint/config path/hash in
-`configs/model_distilled_pair_student.yaml`. Preflight the student before its
-actual run:
+## Exact execution order
+
+The following commands show one manifest. Repeat the HGT, assembly, teacher,
+cache, and student stages for each scenario and seed.
+
+### 1. MolFormer tokens
+
+The official model uses custom Hugging Face code. Remote code must be opted in
+explicitly and the revision must be a 40-character commit hash, never `main`.
 
 ```bash
-python run_precomputed_experiment.py \
-  --experiment configs/model_distilled_pair_student.yaml \
-  --benchmark artifacts/benchmarks/polypharmacy_v1/warm_pair/seed_42/manifest.json \
-  --dry-run
+python scripts/extract_molformer_tokens.py \
+  --input data/raw/drugs_master.csv \
+  --output artifacts/features/molformer_tokens.npz \
+  --revision REPLACE_WITH_40_CHARACTER_COMMIT_HASH \
+  --allow-remote-code \
+  --device cuda
 ```
 
-The existing legacy manifest runner is intentionally not used for these model
-types. A separate invocation is required for each manifest/seed; aggregation
-must continue through the repository's strict `aggregate_results.py` path.
+### 2. Molecular MPNN
+
+```bash
+python scripts/train_molecular_mpnn.py \
+  --input data/raw/drugs_master.csv \
+  --checkpoint artifacts/checkpoints/molecular_mpnn.pt \
+  --device cuda
+
+python scripts/export_molecular_mpnn_tokens.py \
+  --input data/raw/drugs_master.csv \
+  --checkpoint artifacts/checkpoints/molecular_mpnn.pt \
+  --output artifacts/features/mpnn_tokens.npz \
+  --device cuda
+```
+
+### 3. Typed PrimeKG HGT
+
+```bash
+python scripts/train_primekg_hgt.py \
+  --primekg data/external/primekg_kg.csv \
+  --morgan artifacts/morgan_fingerprints.parquet \
+  --manifest artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json \
+  --checkpoint artifacts/checkpoints/hgt_cold_1_seed_42.pt \
+  --output artifacts/features/hgt_cold_1_seed_42.npz \
+  --device cuda
+```
+
+### 4. Assemble one manifest-bound artifact
+
+```bash
+python build_advanced_features.py \
+  --manifest artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json \
+  --morgan artifacts/morgan_fingerprints.parquet \
+  --molformer artifacts/features/molformer_tokens.npz \
+  --mpnn artifacts/features/mpnn_tokens.npz \
+  --kg artifacts/features/hgt_cold_1_seed_42.npz \
+  --output artifacts/features/advanced_cold_1_seed_42.npz
+```
+
+### 5. Materialize and train the teacher
+
+This command measures dimensions and writes every required path and SHA-256;
+do not edit hashes by hand.
+
+```bash
+python configure_advanced_experiment.py \
+  --model teacher \
+  --template configs/model_multimodal_teacher.yaml \
+  --manifest artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json \
+  --features artifacts/features/advanced_cold_1_seed_42.npz \
+  --hierarchy artifacts/meddra_hierarchy.json \
+  --output artifacts/configs/teacher_cold_1_seed_42.yaml
+
+python run_precomputed_experiment.py \
+  --experiment artifacts/configs/teacher_cold_1_seed_42.yaml \
+  --benchmark artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+```
+
+### 6. Cache the selected teacher
+
+```bash
+python build_teacher_cache.py \
+  --experiment artifacts/configs/teacher_cold_1_seed_42.yaml \
+  --benchmark artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json \
+  --output artifacts/features/teacher_cache_cold_1_seed_42.npz \
+  --device cpu
+```
+
+### 7. Materialize and train the student
+
+```bash
+python configure_advanced_experiment.py \
+  --model student \
+  --template configs/model_distilled_pair_student.yaml \
+  --manifest artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json \
+  --cache artifacts/features/teacher_cache_cold_1_seed_42.npz \
+  --teacher-config artifacts/configs/teacher_cold_1_seed_42.yaml \
+  --hierarchy artifacts/meddra_hierarchy.json \
+  --output artifacts/configs/student_cold_1_seed_42.yaml
+
+python run_precomputed_experiment.py \
+  --experiment artifacts/configs/student_cold_1_seed_42.yaml \
+  --benchmark artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+```
+
+Both training runs select checkpoints only on validation macro average
+precision. Calibration and thresholds are fit only after model selection, on
+validation logits. Test construction remains blocked until validation is
+frozen.
+
+## Resumable orchestration
+
+`run_advanced_pipeline.py` executes only the allow-listed stages declared in
+`configs/advanced_pipeline.example.yaml`. A stage accepts one argument list or
+multiple argument lists, which is how scenario/seed jobs are expressed.
+
+```bash
+python run_advanced_pipeline.py \
+  --config configs/advanced_pipeline.example.yaml \
+  --dry-run
+
+python run_advanced_pipeline.py \
+  --config configs/advanced_pipeline.example.yaml \
+  --start-at hgt \
+  --stop-after student
+```
+
+## Performance claims
+
+This implementation makes no performance guarantee. The architecture is an
+advanced candidate, not a measured result. Report warm-pair, cold-1, and
+cold-2 macro/micro average precision, AUROC as a secondary metric, ranking
+metrics, calibration, and five-seed uncertainty only from completed,
+hash-verified runs.

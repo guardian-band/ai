@@ -182,9 +182,11 @@ def _feature_schema_check(
 ) -> None:
     expected = {
         "morgan_dim": artifact.morgan.shape[1],
-        "molecular_dim": artifact.molecular_tokens.shape[2],
+        "molformer_dim": artifact.molformer_tokens.shape[2],
+        "mpnn_dim": artifact.mpnn_tokens.shape[2],
         "kg_dim": artifact.kg_tokens.shape[2],
-        "molecular_token_count": artifact.molecular_tokens.shape[1],
+        "molformer_token_count": artifact.molformer_tokens.shape[1],
+        "mpnn_token_count": artifact.mpnn_tokens.shape[1],
         "kg_token_count": artifact.kg_tokens.shape[1],
     }
     mismatches = {

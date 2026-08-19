@@ -11,21 +11,54 @@ from src.models.multimodal_teacher_student import (
 def _drug_batch(batch_size=2):
     return {
         "morgan": torch.randn(batch_size, 8),
-        "molecular_tokens": torch.randn(batch_size, 3, 6),
+        "molformer_tokens": torch.randn(batch_size, 3, 6),
+        "mpnn_tokens": torch.randn(batch_size, 4, 7),
         "kg_tokens": torch.randn(batch_size, 2, 5),
         "morgan_available": torch.ones(batch_size, dtype=torch.bool),
-        "molecular_available": torch.ones(batch_size, dtype=torch.bool),
+        "molformer_available": torch.ones(batch_size, dtype=torch.bool),
+        "mpnn_available": torch.ones(batch_size, dtype=torch.bool),
         "kg_available": torch.ones(batch_size, dtype=torch.bool),
     }
+
+
+def test_teacher_consumes_distinct_molformer_mpnn_and_hgt_modalities():
+    model = MultiModalTeacher(
+        morgan_dim=8,
+        molformer_dim=6,
+        mpnn_dim=7,
+        kg_dim=5,
+        molformer_token_count=3,
+        mpnn_token_count=4,
+        kg_token_count=2,
+        hidden_dim=16,
+        num_organ=2,
+        num_specific=4,
+        num_heads=4,
+    ).eval()
+    drug = {
+        "morgan": torch.randn(2, 8),
+        "molformer_tokens": torch.randn(2, 3, 6),
+        "mpnn_tokens": torch.randn(2, 4, 7),
+        "kg_tokens": torch.randn(2, 2, 5),
+    }
+    with torch.inference_mode():
+        baseline = model(drug, drug).specific_logits
+        changed = dict(drug)
+        changed["mpnn_tokens"] = drug["mpnn_tokens"] + 5.0
+        updated = model(changed, drug).specific_logits
+    assert baseline.shape == (2, 4)
+    assert not torch.allclose(baseline, updated)
 
 
 def test_teacher_uses_multiple_tokens_and_is_swap_invariant():
     torch.manual_seed(3)
     model = MultiModalTeacher(
         morgan_dim=8,
-        molecular_dim=6,
+        molformer_dim=6,
+        mpnn_dim=7,
         kg_dim=5,
-        molecular_token_count=3,
+        molformer_token_count=3,
+        mpnn_token_count=4,
         kg_token_count=2,
         hidden_dim=16,
         num_organ=2,
@@ -43,7 +76,7 @@ def test_teacher_uses_multiple_tokens_and_is_swap_invariant():
     assert torch.allclose(output.specific_logits, reverse.specific_logits, atol=1e-6, rtol=0.0)
 
     changed = {key: value.clone() for key, value in drug_a.items()}
-    changed["molecular_tokens"][:, 1, :] += 10.0
+    changed["molformer_tokens"][:, 1, :] += 10.0
     changed_output = model(changed, drug_b)
     assert not torch.allclose(output.specific_logits, changed_output.specific_logits)
 
@@ -51,9 +84,11 @@ def test_teacher_uses_multiple_tokens_and_is_swap_invariant():
 def test_teacher_handles_all_missing_modalities_with_finite_logits():
     model = MultiModalTeacher(
         morgan_dim=8,
-        molecular_dim=6,
+        molformer_dim=6,
+        mpnn_dim=7,
         kg_dim=5,
-        molecular_token_count=3,
+        molformer_token_count=3,
+        mpnn_token_count=4,
         kg_token_count=2,
         hidden_dim=16,
         num_organ=2,
@@ -61,7 +96,12 @@ def test_teacher_handles_all_missing_modalities_with_finite_logits():
         num_heads=4,
     ).eval()
     drug = _drug_batch()
-    for key in ("morgan_available", "molecular_available", "kg_available"):
+    for key in (
+        "morgan_available",
+        "molformer_available",
+        "mpnn_available",
+        "kg_available",
+    ):
         drug[key].fill_(False)
     output = model(drug, drug)
     assert torch.isfinite(output.organ_logits).all()
@@ -72,9 +112,11 @@ def test_teacher_cache_encoding_matches_student_schema_and_uses_modalities():
     torch.manual_seed(31)
     teacher = MultiModalTeacher(
         morgan_dim=8,
-        molecular_dim=6,
+        molformer_dim=6,
+        mpnn_dim=7,
         kg_dim=5,
-        molecular_token_count=3,
+        molformer_token_count=3,
+        mpnn_token_count=4,
         kg_token_count=2,
         hidden_dim=16,
         num_organ=2,
@@ -100,7 +142,8 @@ def test_teacher_cache_encoding_matches_student_schema_and_uses_modalities():
     teacher.eval()
     for modality, field in (
         ("morgan", "morgan_available"),
-        ("molecular_tokens", "molecular_available"),
+        ("molformer_tokens", "molformer_available"),
+        ("mpnn_tokens", "mpnn_available"),
         ("kg_tokens", "kg_available"),
     ):
         changed = {key: value.clone() for key, value in drug.items()}
@@ -137,7 +180,19 @@ def test_student_is_swap_invariant_and_has_fixed_token_contract():
 
 def test_distillation_detaches_teacher_and_trains_student():
     torch.manual_seed(5)
-    teacher = MultiModalTeacher(8, 6, 5, 3, 2, 16, 2, 4, num_heads=4)
+    teacher = MultiModalTeacher(
+        morgan_dim=8,
+        molformer_dim=6,
+        mpnn_dim=7,
+        kg_dim=5,
+        molformer_token_count=3,
+        mpnn_token_count=4,
+        kg_token_count=2,
+        hidden_dim=16,
+        num_organ=2,
+        num_specific=4,
+        num_heads=4,
+    )
     student = DistilledPairStudent(12, 5, 16, 2, 4, num_heads=4)
     teacher_output = teacher(_drug_batch(), _drug_batch())
     student_output = student(torch.randn(2, 5, 12), torch.randn(2, 5, 12))

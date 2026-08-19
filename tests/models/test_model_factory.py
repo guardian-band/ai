@@ -26,11 +26,19 @@ def test_supported_configs_create_distinct_models(config_name, expected_type):
     assert isinstance(model, expected_type)
 
 
-@pytest.mark.parametrize("config_name", ["unified", "advanced"])
+@pytest.mark.parametrize("config_name", ["unified"])
 def test_unavailable_configs_fail_instead_of_substituting(config_name):
     config = load_experiment_config(f"configs/models/{config_name}.yaml")
     with pytest.raises(UnsupportedModelConfiguration, match="unavailable"):
         create_model(config, num_labels=3, input_dim=8)
+
+
+def test_advanced_config_is_the_executable_multimodal_teacher_template():
+    from src.models.multimodal_teacher_student import MultiModalTeacher
+
+    config = load_experiment_config("configs/models/advanced.yaml")
+    assert config["model_type"] == "multimodal_teacher"
+    assert isinstance(create_model(config, num_labels=100), MultiModalTeacher)
 
 
 def test_invalid_model_type_config_fails_clearly(tmp_path):
@@ -101,9 +109,11 @@ def test_multimodal_teacher_and_student_factory_dispatch():
     teacher_config = {
         "model_type": "multimodal_teacher",
         "morgan_dim": 8,
-        "molecular_dim": 6,
+        "molformer_dim": 6,
+        "mpnn_dim": 7,
         "kg_dim": 5,
-        "molecular_token_count": 3,
+        "molformer_token_count": 3,
+        "mpnn_token_count": 4,
         "kg_token_count": 2,
         "hidden_dim": 16,
         "num_organ": 2,

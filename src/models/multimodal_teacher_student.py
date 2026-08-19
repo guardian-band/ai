@@ -1,9 +1,8 @@
 """Offline multimodal teacher and CPU-safe distilled pair student.
 
-The upstream molecular and PrimeKG encoders are deliberately not imported here.
-They are offline producers; this module consumes their validated tensors.  Both
-models average two ordered interaction passes so the public prediction is
-invariant to the order of the drugs.
+The teacher consumes independently produced Morgan, MolFormer, molecular-MPNN,
+and typed PrimeKG-HGT features. Both pair models average two ordered interaction
+passes so the public prediction is invariant to the order of the drugs.
 """
 
 from __future__ import annotations
@@ -66,23 +65,25 @@ def _padding_mask(value: Any, batch_size: int, token_count: int, name: str) -> t
 class MultiModalTeacher(nn.Module):
     """Token-level multimodal teacher for offline training.
 
-    Each drug mapping must contain ``morgan`` [B, M], ``molecular_tokens``
-    [B, Tm, Dm], and ``kg_tokens`` [B, Tk, Dk].  Availability fields are
-    boolean per-drug masks; padding masks are optional and use ``True`` for
-    padding.  The model does not load or infer any upstream encoder.
+    Each drug mapping contains ``morgan`` [B, M], ``molformer_tokens``
+    [B, Tf, Df], ``mpnn_tokens`` [B, Tp, Dp], and ``kg_tokens`` [B, Tk, Dk].
+    Availability fields are boolean per-drug masks. Padding masks use ``True``
+    for padding. The model does not load or infer any upstream encoder.
     """
 
     def __init__(
         self,
+        *,
         morgan_dim: int,
-        molecular_dim: int,
+        molformer_dim: int,
+        mpnn_dim: int,
         kg_dim: int,
-        molecular_token_count: int,
+        molformer_token_count: int,
+        mpnn_token_count: int,
         kg_token_count: int,
         hidden_dim: int,
         num_organ: int,
         num_specific: int,
-        *,
         num_heads: int = 4,
         dropout: float = 0.0,
         cache_token_count: int = 8,
@@ -90,9 +91,13 @@ class MultiModalTeacher(nn.Module):
     ) -> None:
         super().__init__()
         morgan_dim = _positive_int(morgan_dim, "morgan_dim")
-        molecular_dim = _positive_int(molecular_dim, "molecular_dim")
+        molformer_dim = _positive_int(molformer_dim, "molformer_dim")
+        mpnn_dim = _positive_int(mpnn_dim, "mpnn_dim")
         kg_dim = _positive_int(kg_dim, "kg_dim")
-        molecular_token_count = _positive_int(molecular_token_count, "molecular_token_count")
+        molformer_token_count = _positive_int(
+            molformer_token_count, "molformer_token_count"
+        )
+        mpnn_token_count = _positive_int(mpnn_token_count, "mpnn_token_count")
         kg_token_count = _positive_int(kg_token_count, "kg_token_count")
         hidden_dim = _positive_int(hidden_dim, "hidden_dim")
         num_organ = _positive_int(num_organ, "num_organ")
@@ -107,9 +112,11 @@ class MultiModalTeacher(nn.Module):
         cache_token_dim = _positive_int(cache_token_dim, "cache_token_dim")
 
         self.morgan_dim = morgan_dim
-        self.molecular_dim = molecular_dim
+        self.molformer_dim = molformer_dim
+        self.mpnn_dim = mpnn_dim
         self.kg_dim = kg_dim
-        self.molecular_token_count = molecular_token_count
+        self.molformer_token_count = molformer_token_count
+        self.mpnn_token_count = mpnn_token_count
         self.kg_token_count = kg_token_count
         self.hidden_dim = hidden_dim
         self.num_organ = num_organ
@@ -117,10 +124,11 @@ class MultiModalTeacher(nn.Module):
         self.cache_token_count = cache_token_count
         self.cache_token_dim = cache_token_dim
         self.morgan_projection = nn.Linear(morgan_dim, hidden_dim)
-        self.molecular_projection = nn.Linear(molecular_dim, hidden_dim)
+        self.molformer_projection = nn.Linear(molformer_dim, hidden_dim)
+        self.mpnn_projection = nn.Linear(mpnn_dim, hidden_dim)
         self.kg_projection = nn.Linear(kg_dim, hidden_dim)
-        self.modality_embeddings = nn.Parameter(torch.zeros(3, hidden_dim))
-        self.missing_tokens = nn.Parameter(torch.zeros(3, hidden_dim))
+        self.modality_embeddings = nn.Parameter(torch.zeros(4, hidden_dim))
+        self.missing_tokens = nn.Parameter(torch.zeros(4, hidden_dim))
         self.cross_attention = nn.MultiheadAttention(
             hidden_dim, num_heads, dropout=dropout, batch_first=True
         )
@@ -140,23 +148,54 @@ class MultiModalTeacher(nn.Module):
         self.organ_head = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, 1))
         self.specific_head = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, 1))
 
-    def _drug_tokens(self, drug: Mapping[str, Any]) -> torch.Tensor:
-        required = {"morgan", "molecular_tokens", "kg_tokens"}
+    def _sequence_modality(
+        self,
+        values: torch.Tensor,
+        *,
+        projection: nn.Linear,
+        availability: torch.Tensor,
+        padding_mask: torch.Tensor,
+        modality_index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        projected = projection(values) + self.modality_embeddings[modality_index]
+        valid = availability[:, None] & ~padding_mask
+        missing_rows = ~valid.any(dim=1)
+        if bool(missing_rows.any()):
+            valid = valid.clone()
+            projected = projected.clone()
+            valid[missing_rows, 0] = True
+            projected[missing_rows, 0] = self.missing_tokens[modality_index]
+        projected = projected.masked_fill((~valid).unsqueeze(-1), 0.0)
+        return projected, ~valid
+
+    def _drug_tokens(self, drug: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
+        required = {"morgan", "molformer_tokens", "mpnn_tokens", "kg_tokens"}
         if not isinstance(drug, Mapping) or not required.issubset(drug):
-            raise ValueError("each teacher drug input must contain morgan, molecular_tokens, and kg_tokens")
+            raise ValueError(
+                "each teacher drug input must contain morgan, molformer_tokens, "
+                "mpnn_tokens, and kg_tokens"
+            )
         morgan = _check_tensor(drug["morgan"], "morgan", 2)
-        molecular = _check_tensor(drug["molecular_tokens"], "molecular_tokens", 3)
+        molformer = _check_tensor(drug["molformer_tokens"], "molformer_tokens", 3)
+        mpnn = _check_tensor(drug["mpnn_tokens"], "mpnn_tokens", 3)
         kg = _check_tensor(drug["kg_tokens"], "kg_tokens", 3)
         batch_size = morgan.shape[0]
         if morgan.shape[1] != self.morgan_dim:
             raise ValueError(f"morgan must have shape [batch, {self.morgan_dim}]")
-        if molecular.shape[0] != batch_size or molecular.shape[1:] != (
-            self.molecular_token_count,
-            self.molecular_dim,
+        if molformer.shape[0] != batch_size or molformer.shape[1:] != (
+            self.molformer_token_count,
+            self.molformer_dim,
         ):
             raise ValueError(
-                "molecular_tokens must have shape "
-                f"[batch, {self.molecular_token_count}, {self.molecular_dim}]"
+                "molformer_tokens must have shape "
+                f"[batch, {self.molformer_token_count}, {self.molformer_dim}]"
+            )
+        if mpnn.shape[0] != batch_size or mpnn.shape[1:] != (
+            self.mpnn_token_count,
+            self.mpnn_dim,
+        ):
+            raise ValueError(
+                f"mpnn_tokens must have shape [batch, {self.mpnn_token_count}, {self.mpnn_dim}]"
             )
         if kg.shape[0] != batch_size or kg.shape[1:] != (self.kg_token_count, self.kg_dim):
             raise ValueError(
@@ -165,17 +204,26 @@ class MultiModalTeacher(nn.Module):
         morgan_available = _availability(
             drug.get("morgan_available"), batch_size, "morgan_available"
         ).to(device=morgan.device)
-        molecular_available = _availability(
-            drug.get("molecular_available"), batch_size, "molecular_available"
+        molformer_available = _availability(
+            drug.get("molformer_available"), batch_size, "molformer_available"
+        ).to(device=morgan.device)
+        mpnn_available = _availability(
+            drug.get("mpnn_available"), batch_size, "mpnn_available"
         ).to(device=morgan.device)
         kg_available = _availability(drug.get("kg_available"), batch_size, "kg_available").to(
             device=morgan.device
         )
-        molecular_mask = _padding_mask(
-            drug.get("molecular_padding_mask"),
+        molformer_mask = _padding_mask(
+            drug.get("molformer_padding_mask"),
             batch_size,
-            self.molecular_token_count,
-            "molecular_padding_mask",
+            self.molformer_token_count,
+            "molformer_padding_mask",
+        ).to(device=morgan.device)
+        mpnn_mask = _padding_mask(
+            drug.get("mpnn_padding_mask"),
+            batch_size,
+            self.mpnn_token_count,
+            "mpnn_padding_mask",
         ).to(device=morgan.device)
         kg_mask = _padding_mask(
             drug.get("kg_padding_mask"), batch_size, self.kg_token_count, "kg_padding_mask"
@@ -184,19 +232,35 @@ class MultiModalTeacher(nn.Module):
         morgan_token = self.morgan_projection(morgan).unsqueeze(1) + self.modality_embeddings[0]
         morgan_missing = self.missing_tokens[0].view(1, 1, -1)
         morgan_token = torch.where(morgan_available[:, None, None], morgan_token, morgan_missing)
+        morgan_mask = torch.zeros((batch_size, 1), dtype=torch.bool, device=morgan.device)
 
-        molecular_tokens = self.molecular_projection(molecular) + self.modality_embeddings[1]
-        molecular_valid = molecular_available[:, None] & ~molecular_mask
-        molecular_missing = self.missing_tokens[1].view(1, 1, -1)
-        molecular_tokens = torch.where(
-            molecular_valid[:, :, None], molecular_tokens, molecular_missing
+        molformer_tokens, molformer_key_padding = self._sequence_modality(
+            molformer,
+            projection=self.molformer_projection,
+            availability=molformer_available,
+            padding_mask=molformer_mask,
+            modality_index=1,
         )
-
-        kg_tokens = self.kg_projection(kg) + self.modality_embeddings[2]
-        kg_valid = kg_available[:, None] & ~kg_mask
-        kg_missing = self.missing_tokens[2].view(1, 1, -1)
-        kg_tokens = torch.where(kg_valid[:, :, None], kg_tokens, kg_missing)
-        return torch.cat([morgan_token, molecular_tokens, kg_tokens], dim=1)
+        mpnn_tokens, mpnn_key_padding = self._sequence_modality(
+            mpnn,
+            projection=self.mpnn_projection,
+            availability=mpnn_available,
+            padding_mask=mpnn_mask,
+            modality_index=2,
+        )
+        kg_tokens, kg_key_padding = self._sequence_modality(
+            kg,
+            projection=self.kg_projection,
+            availability=kg_available,
+            padding_mask=kg_mask,
+            modality_index=3,
+        )
+        return (
+            torch.cat([morgan_token, molformer_tokens, mpnn_tokens, kg_tokens], dim=1),
+            torch.cat(
+                [morgan_mask, molformer_key_padding, mpnn_key_padding, kg_key_padding], dim=1
+            ),
+        )
 
     def encode_drug_for_cache(self, drug: Mapping[str, Any]) -> torch.Tensor:
         """Return trainable fixed-shape latent tokens for one drug batch.
@@ -207,12 +271,13 @@ class MultiModalTeacher(nn.Module):
         gradients into the cache encoder.
         """
 
-        projected_modalities = self._drug_tokens(drug)
+        projected_modalities, key_padding_mask = self._drug_tokens(drug)
         queries = self.cache_queries.unsqueeze(0).expand(projected_modalities.shape[0], -1, -1)
         latent_hidden, _ = self.cache_resampler(
             queries,
             projected_modalities,
             projected_modalities,
+            key_padding_mask=key_padding_mask,
             need_weights=False,
         )
         latent_tokens = self.cache_output_projection(latent_hidden)

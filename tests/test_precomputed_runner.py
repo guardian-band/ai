@@ -25,6 +25,32 @@ from run_precomputed_experiment import (
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
+HASH_D = "d" * 64
+
+
+def _feature_arrays(count):
+    return {
+        "morgan": np.ones((count, 4), dtype=np.float32),
+        "molformer_tokens": np.ones((count, 2, 3), dtype=np.float32),
+        "mpnn_tokens": np.ones((count, 3, 5), dtype=np.float32),
+        "kg_tokens": np.ones((count, 1, 2), dtype=np.float32),
+        "morgan_available": np.ones(count, dtype=bool),
+        "molformer_available": np.ones(count, dtype=bool),
+        "mpnn_available": np.ones(count, dtype=bool),
+        "kg_available": np.ones(count, dtype=bool),
+        "molformer_padding_mask": np.zeros((count, 2), dtype=bool),
+        "mpnn_padding_mask": np.zeros((count, 3), dtype=bool),
+        "kg_padding_mask": np.zeros((count, 1), dtype=bool),
+    }
+
+
+def _feature_provenance():
+    return {
+        "morgan_provenance_hash": HASH_A,
+        "molformer_provenance_hash": HASH_B,
+        "mpnn_provenance_hash": HASH_C,
+        "kg_provenance_hash": HASH_D,
+    }
 
 
 def _fixture(tmp_path):
@@ -47,10 +73,8 @@ def _fixture(tmp_path):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
     feature = MultimodalFeatureArtifact.write(
-        tmp_path / "features.npz", ["D1", "D2", "D3"],
-        np.ones((3, 4), dtype=np.float32), np.ones((3, 2, 3), dtype=np.float32), np.ones((3, 1, 2), dtype=np.float32),
-        np.ones(3, dtype=bool), np.ones(3, dtype=bool), np.ones(3, dtype=bool), np.zeros((3, 2), dtype=bool), np.zeros((3, 1), dtype=bool),
-        morgan_provenance_hash=HASH_A, molecular_provenance_hash=HASH_B, kg_provenance_hash=HASH_C,
+        tmp_path / "features.npz", drug_ids=["D1", "D2", "D3"],
+        **_feature_arrays(3), **_feature_provenance(),
         manifest_compatibility={
             "benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1,
             "manifest_hash": manifest_hash,
@@ -61,8 +85,8 @@ def _fixture(tmp_path):
     config = tmp_path / "teacher.yaml"
     config.write_text(
         "\n".join([
-            "model_type: multimodal_teacher", "morgan_dim: 4", "molecular_dim: 3", "kg_dim: 2",
-            "molecular_token_count: 2", "kg_token_count: 1", "hidden_dim: 8", "num_heads: 2",
+            "model_type: multimodal_teacher", "morgan_dim: 4", "molformer_dim: 3", "mpnn_dim: 5", "kg_dim: 2",
+            "molformer_token_count: 2", "mpnn_token_count: 3", "kg_token_count: 1", "hidden_dim: 8", "num_heads: 2",
             "num_organ: 1", "num_specific: 1", "cache_token_count: 3", "cache_token_dim: 6",
             "batch_size: 2", "epochs: 1", "patience: 1", "learning_rate: 0.001", "weight_decay: 0.0", "hierarchy_weight: 0.1",
             f"feature_artifact_path: {feature.metadata.get('path', 'features.npz')}",
@@ -89,14 +113,8 @@ def test_preflight_validates_test_join_without_constructing_test_dataset(tmp_pat
     feature_path = tmp_path / "features_without_test_drug.npz"
     MultimodalFeatureArtifact.write(
         feature_path,
-        ["D1", "D2", "D3"],
-        np.ones((3, 4), dtype=np.float32),
-        np.ones((3, 2, 3), dtype=np.float32),
-        np.ones((3, 1, 2), dtype=np.float32),
-        np.ones(3, dtype=bool), np.ones(3, dtype=bool), np.ones(3, dtype=bool),
-        np.zeros((3, 2), dtype=bool), np.zeros((3, 1), dtype=bool),
-        morgan_provenance_hash=HASH_A, molecular_provenance_hash=HASH_B,
-        kg_provenance_hash=HASH_C,
+        drug_ids=["D1", "D2", "D3"],
+        **_feature_arrays(3), **_feature_provenance(),
         manifest_compatibility={
             "benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1,
             "manifest_hash": manifest_payload["manifest_hash"],
@@ -120,18 +138,19 @@ def test_preflight_requires_exact_feature_manifest_compatibility(tmp_path):
     wrong_path = tmp_path / "features_wrong_seed.npz"
     MultimodalFeatureArtifact.write(
         wrong_path,
-        original.drug_ids,
-        original.morgan,
-        original.molecular_tokens,
-        original.kg_tokens,
-        original.morgan_available,
-        original.molecular_available,
-        original.kg_available,
-        original.molecular_padding_mask,
-        original.kg_padding_mask,
-        morgan_provenance_hash=HASH_A,
-        molecular_provenance_hash=HASH_B,
-        kg_provenance_hash=HASH_C,
+        drug_ids=original.drug_ids,
+        morgan=original.morgan,
+        molformer_tokens=original.molformer_tokens,
+        mpnn_tokens=original.mpnn_tokens,
+        kg_tokens=original.kg_tokens,
+        morgan_available=original.morgan_available,
+        molformer_available=original.molformer_available,
+        mpnn_available=original.mpnn_available,
+        kg_available=original.kg_available,
+        molformer_padding_mask=original.molformer_padding_mask,
+        mpnn_padding_mask=original.mpnn_padding_mask,
+        kg_padding_mask=original.kg_padding_mask,
+        **_feature_provenance(),
         manifest_compatibility={
             "benchmark_id": "fixture", "scenario": "warm_pair", "seed": 2,
             "manifest_hash": manifest_payload["manifest_hash"],
@@ -279,8 +298,8 @@ def test_student_preflight_loads_and_freezes_teacher_checkpoint(tmp_path):
     teacher_config, manifest = _fixture(tmp_path)
     teacher = create_model(
         {
-            "model_type": "multimodal_teacher", "morgan_dim": 4, "molecular_dim": 3, "kg_dim": 2,
-            "molecular_token_count": 2, "kg_token_count": 1, "hidden_dim": 8, "num_heads": 2,
+            "model_type": "multimodal_teacher", "morgan_dim": 4, "molformer_dim": 3, "mpnn_dim": 5, "kg_dim": 2,
+            "molformer_token_count": 2, "mpnn_token_count": 3, "kg_token_count": 1, "hidden_dim": 8, "num_heads": 2,
             "num_organ": 1, "num_specific": 1, "cache_token_count": 3, "cache_token_dim": 6,
         },
         num_labels=1,

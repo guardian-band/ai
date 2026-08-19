@@ -18,6 +18,65 @@ HASH_C = "c" * 64
 HASH_D = "d" * 64
 
 
+def _feature_arrays(count, *, morgan=None):
+    return {
+        "morgan": np.ones((count, 4), dtype=np.float32) if morgan is None else morgan,
+        "molformer_tokens": np.ones((count, 2, 3), dtype=np.float32),
+        "mpnn_tokens": np.ones((count, 3, 5), dtype=np.float32),
+        "kg_tokens": np.ones((count, 1, 2), dtype=np.float32),
+        "morgan_available": np.ones(count, dtype=bool),
+        "molformer_available": np.ones(count, dtype=bool),
+        "mpnn_available": np.ones(count, dtype=bool),
+        "kg_available": np.ones(count, dtype=bool),
+        "molformer_padding_mask": np.zeros((count, 2), dtype=bool),
+        "mpnn_padding_mask": np.zeros((count, 3), dtype=bool),
+        "kg_padding_mask": np.zeros((count, 1), dtype=bool),
+    }
+
+
+def _provenance(**overrides):
+    values = {
+        "morgan_provenance_hash": HASH_A,
+        "molformer_provenance_hash": HASH_B,
+        "mpnn_provenance_hash": HASH_C,
+        "kg_provenance_hash": HASH_D,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_multimodal_artifact_keeps_molformer_and_mpnn_as_separate_modalities(tmp_path):
+    artifact = MultimodalFeatureArtifact.write(
+        tmp_path / "advanced.npz",
+        drug_ids=["D1"],
+        morgan=np.ones((1, 4), dtype=np.float32),
+        molformer_tokens=np.ones((1, 3, 6), dtype=np.float32),
+        mpnn_tokens=np.ones((1, 2, 5), dtype=np.float32),
+        kg_tokens=np.ones((1, 4, 7), dtype=np.float32),
+        morgan_available=np.ones(1, dtype=bool),
+        molformer_available=np.ones(1, dtype=bool),
+        mpnn_available=np.ones(1, dtype=bool),
+        kg_available=np.ones(1, dtype=bool),
+        molformer_padding_mask=np.zeros((1, 3), dtype=bool),
+        mpnn_padding_mask=np.zeros((1, 2), dtype=bool),
+        kg_padding_mask=np.zeros((1, 4), dtype=bool),
+        morgan_provenance_hash=HASH_A,
+        molformer_provenance_hash=HASH_B,
+        mpnn_provenance_hash=HASH_C,
+        kg_provenance_hash=HASH_D,
+        manifest_compatibility={
+            "benchmark_id": "fixture",
+            "scenario": "cold_1",
+            "seed": 1,
+            "manifest_hash": "manifest",
+        },
+    )
+    row = artifact.lookup("D1")
+    assert row["molformer_tokens"].shape == (3, 6)
+    assert row["mpnn_tokens"].shape == (2, 5)
+    assert artifact.metadata["schema_version"] == 2
+
+
 @pytest.fixture
 def precomputed_fixture(tmp_path):
     pairs = pd.DataFrame(
@@ -41,18 +100,9 @@ def precomputed_fixture(tmp_path):
     ids = ["D1", "D2", "D3"]
     feature = MultimodalFeatureArtifact.write(
         tmp_path / "features.npz",
-        ids,
-        np.ones((3, 4), dtype=np.float32),
-        np.ones((3, 2, 3), dtype=np.float32),
-        np.ones((3, 1, 2), dtype=np.float32),
-        np.ones(3, dtype=bool),
-        np.ones(3, dtype=bool),
-        np.ones(3, dtype=bool),
-        np.zeros((3, 2), dtype=bool),
-        np.zeros((3, 1), dtype=bool),
-        morgan_provenance_hash=HASH_A,
-        molecular_provenance_hash=HASH_B,
-        kg_provenance_hash=HASH_C,
+        drug_ids=ids,
+        **_feature_arrays(3),
+        **_provenance(),
         manifest_compatibility={"benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1, "manifest_hash": manifest_hash},
     )
     cached = CachedTokenArtifact.write(
@@ -97,13 +147,9 @@ def test_multimodal_dataset_reports_all_missing_drugs(precomputed_fixture):
     manifest_path, manifest, feature, *_ = precomputed_fixture
     missing = MultimodalFeatureArtifact.write(
         manifest_path.parent / "missing.npz",
-        ["D1"],
-        np.ones((1, 4), dtype=np.float32),
-        np.ones((1, 2, 3), dtype=np.float32),
-        np.ones((1, 1, 2), dtype=np.float32),
-        np.ones(1, dtype=bool), np.ones(1, dtype=bool), np.ones(1, dtype=bool),
-        np.zeros((1, 2), dtype=bool), np.zeros((1, 1), dtype=bool),
-        morgan_provenance_hash=HASH_A, molecular_provenance_hash=HASH_B, kg_provenance_hash=HASH_C,
+        drug_ids=["D1"],
+        **_feature_arrays(1),
+        **_provenance(),
         manifest_compatibility={"benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1, "manifest_hash": manifest["manifest_hash"]},
     )
     with pytest.raises(ValueError, match="missing drug IDs.*D2"):
@@ -112,33 +158,24 @@ def test_multimodal_dataset_reports_all_missing_drugs(precomputed_fixture):
 
 def test_multimodal_feature_artifact_rejects_duplicate_nonfinite_and_bad_hash(tmp_path):
     kwargs = dict(
-        morgan_provenance_hash=HASH_A,
-        molecular_provenance_hash=HASH_B,
-        kg_provenance_hash=HASH_C,
+        **_provenance(),
         manifest_compatibility={"benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1, "manifest_hash": "fixture_hash"},
     )
     with pytest.raises(ValueError, match="duplicate"):
         MultimodalFeatureArtifact.write(
-            tmp_path / "duplicate.npz", ["D1", "D1"], np.ones((2, 4), dtype=np.float32),
-            np.ones((2, 2, 3), dtype=np.float32), np.ones((2, 1, 2), dtype=np.float32),
-            np.ones(2, dtype=bool), np.ones(2, dtype=bool), np.ones(2, dtype=bool),
-            np.zeros((2, 2), dtype=bool), np.zeros((2, 1), dtype=bool), **kwargs
+            tmp_path / "duplicate.npz", drug_ids=["D1", "D1"],
+            **_feature_arrays(2), **kwargs
         )
     with pytest.raises(ValueError, match="finite"):
         MultimodalFeatureArtifact.write(
-            tmp_path / "nan.npz", ["D1"], np.full((1, 4), np.nan, dtype=np.float32),
-            np.ones((1, 2, 3), dtype=np.float32), np.ones((1, 1, 2), dtype=np.float32),
-            np.ones(1, dtype=bool), np.ones(1, dtype=bool), np.ones(1, dtype=bool),
-            np.zeros((1, 2), dtype=bool), np.zeros((1, 1), dtype=bool), **kwargs
+            tmp_path / "nan.npz", drug_ids=["D1"],
+            **_feature_arrays(1, morgan=np.full((1, 4), np.nan, dtype=np.float32)),
+            **kwargs
         )
     with pytest.raises(ValueError, match="SHA-256"):
         MultimodalFeatureArtifact.write(
-            tmp_path / "hash.npz", ["D1"], np.ones((1, 4), dtype=np.float32),
-            np.ones((1, 2, 3), dtype=np.float32), np.ones((1, 1, 2), dtype=np.float32),
-            np.ones(1, dtype=bool), np.ones(1, dtype=bool), np.ones(1, dtype=bool),
-            np.zeros((1, 2), dtype=bool), np.zeros((1, 1), dtype=bool),
-            morgan_provenance_hash="bad", molecular_provenance_hash=HASH_B,
-            kg_provenance_hash=HASH_C,
+            tmp_path / "hash.npz", drug_ids=["D1"], **_feature_arrays(1),
+            **_provenance(morgan_provenance_hash="bad"),
             manifest_compatibility={"benchmark_id": "fixture", "scenario": "warm_pair", "seed": 1, "manifest_hash": "fixture_hash"}
         )
 
@@ -154,12 +191,7 @@ def test_feature_metadata_and_arrays_are_immutable_after_validation(precomputed_
 def test_feature_artifact_requires_complete_manifest_compatibility(tmp_path):
     with pytest.raises(ValueError, match="manifest_compatibility missing|required"):
         MultimodalFeatureArtifact.write(
-            tmp_path / "incomplete.npz", ["D1"],
-            np.ones((1, 4), dtype=np.float32),
-            np.ones((1, 2, 3), dtype=np.float32),
-            np.ones((1, 1, 2), dtype=np.float32),
-            np.ones(1, dtype=bool), np.ones(1, dtype=bool), np.ones(1, dtype=bool),
-            np.zeros((1, 2), dtype=bool), np.zeros((1, 1), dtype=bool),
-            morgan_provenance_hash=HASH_A, molecular_provenance_hash=HASH_B,
-            kg_provenance_hash=HASH_C, manifest_compatibility={"benchmark_id": "fixture"},
+            tmp_path / "incomplete.npz", drug_ids=["D1"],
+            **_feature_arrays(1), **_provenance(),
+            manifest_compatibility={"benchmark_id": "fixture"},
         )

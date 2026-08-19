@@ -1,0 +1,110 @@
+# Replace every ALL_CAPS placeholder before use. Add one argv list per
+# scenario/seed under hgt, assemble, teacher_config, teacher, cache,
+# student_config, and student.
+stages:
+  molformer:
+    - --input
+    - data/raw/drugs_master.csv
+    - --output
+    - artifacts/features/molformer_tokens.npz
+    - --revision
+    - REPLACE_WITH_40_CHARACTER_COMMIT_HASH
+    - --allow-remote-code
+    - --device
+    - cuda
+
+  mpnn_train:
+    - --input
+    - data/raw/drugs_master.csv
+    - --checkpoint
+    - artifacts/checkpoints/molecular_mpnn.pt
+    - --device
+    - cuda
+
+  mpnn_export:
+    - --input
+    - data/raw/drugs_master.csv
+    - --checkpoint
+    - artifacts/checkpoints/molecular_mpnn.pt
+    - --output
+    - artifacts/features/mpnn_tokens.npz
+    - --device
+    - cuda
+
+  hgt:
+    - - --primekg
+      - data/external/primekg_kg.csv
+      - --morgan
+      - artifacts/morgan_fingerprints.parquet
+      - --manifest
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+      - --checkpoint
+      - artifacts/checkpoints/hgt_cold_1_seed_42.pt
+      - --output
+      - artifacts/features/hgt_cold_1_seed_42.npz
+      - --device
+      - cuda
+
+  assemble:
+    - - --manifest
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+      - --morgan
+      - artifacts/morgan_fingerprints.parquet
+      - --molformer
+      - artifacts/features/molformer_tokens.npz
+      - --mpnn
+      - artifacts/features/mpnn_tokens.npz
+      - --kg
+      - artifacts/features/hgt_cold_1_seed_42.npz
+      - --output
+      - artifacts/features/advanced_cold_1_seed_42.npz
+
+  teacher_config:
+    - - --model
+      - teacher
+      - --template
+      - configs/model_multimodal_teacher.yaml
+      - --manifest
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+      - --features
+      - artifacts/features/advanced_cold_1_seed_42.npz
+      - --hierarchy
+      - artifacts/meddra_hierarchy.json
+      - --output
+      - artifacts/configs/teacher_cold_1_seed_42.yaml
+
+  teacher:
+    - - --experiment
+      - artifacts/configs/teacher_cold_1_seed_42.yaml
+      - --benchmark
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+
+  cache:
+    - - --experiment
+      - artifacts/configs/teacher_cold_1_seed_42.yaml
+      - --benchmark
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+      - --output
+      - artifacts/features/teacher_cache_cold_1_seed_42.npz
+
+  student_config:
+    - - --model
+      - student
+      - --template
+      - configs/model_distilled_pair_student.yaml
+      - --manifest
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
+      - --cache
+      - artifacts/features/teacher_cache_cold_1_seed_42.npz
+      - --teacher-config
+      - artifacts/configs/teacher_cold_1_seed_42.yaml
+      - --hierarchy
+      - artifacts/meddra_hierarchy.json
+      - --output
+      - artifacts/configs/student_cold_1_seed_42.yaml
+
+  student:
+    - - --experiment
+      - artifacts/configs/student_cold_1_seed_42.yaml
+      - --benchmark
+      - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json

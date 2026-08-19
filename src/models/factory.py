@@ -237,9 +237,11 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
         if num_specific != num_labels:
             raise ValueError("multimodal_teacher num_specific must match num_labels")
         required = (
-            "molecular_dim",
+            "molformer_dim",
+            "mpnn_dim",
             "kg_dim",
-            "molecular_token_count",
+            "molformer_token_count",
+            "mpnn_token_count",
             "kg_token_count",
             "hidden_dim",
             "num_organ",
@@ -251,9 +253,11 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
             )
         return MultiModalTeacher(
             morgan_dim=config.get("morgan_dim", input_dim),
-            molecular_dim=config["molecular_dim"],
+            molformer_dim=config["molformer_dim"],
+            mpnn_dim=config["mpnn_dim"],
             kg_dim=config["kg_dim"],
-            molecular_token_count=config["molecular_token_count"],
+            molformer_token_count=config["molformer_token_count"],
+            mpnn_token_count=config["mpnn_token_count"],
             kg_token_count=config["kg_token_count"],
             hidden_dim=config["hidden_dim"],
             num_organ=config["num_organ"],
