@@ -68,7 +68,15 @@ def main() -> None:
     frame = _read(args.input)
     if args.smiles_column not in frame:
         raise ValueError(f"drug input is missing {args.smiles_column}")
-    graphs = [featurize_smiles(value) for value in frame[args.smiles_column].tolist()]
+    graphs = []
+    invalid_count = 0
+    for value in frame[args.smiles_column].tolist():
+        try:
+            graphs.append(featurize_smiles(value))
+        except ValueError:
+            invalid_count += 1
+    if invalid_count:
+        print(f"Skipping {invalid_count} drugs without a valid SMILES during MPNN training")
     if len(graphs) < 2:
         raise ValueError("at least two valid molecules are required")
     generator = torch.Generator().manual_seed(args.seed)

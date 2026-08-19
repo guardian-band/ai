@@ -160,27 +160,44 @@ def export_molformer_token_artifact(
     from rdkit import Chem
 
     canonical: list[str] = []
-    for drug_id, value in zip(ids, values, strict=True):
+    valid_indices: list[int] = []
+    available = np.zeros(len(ids), dtype=bool)
+    for index, (drug_id, value) in enumerate(zip(ids, values, strict=True)):
         if not isinstance(drug_id, str) or not drug_id.strip():
             raise ValueError("drug IDs must be non-empty strings")
         molecule = Chem.MolFromSmiles(value) if isinstance(value, str) else None
-        if molecule is None:
-            raise ValueError(f"invalid SMILES for drug {drug_id}")
+        if molecule is None or molecule.GetNumAtoms() == 0:
+            continue
         canonical.append(Chem.MolToSmiles(molecule, canonical=True))
-    token_batches: list[np.ndarray] = []
-    mask_batches: list[np.ndarray] = []
-    for start in range(0, len(ids), batch_size):
-        tokens, padding_mask = producer.encode(canonical[start : start + batch_size])
-        token_batches.append(tokens)
-        mask_batches.append(padding_mask)
-    tokens = np.ascontiguousarray(np.concatenate(token_batches, axis=0), dtype=np.float32)
-    padding_mask = np.ascontiguousarray(np.concatenate(mask_batches, axis=0), dtype=bool)
+        valid_indices.append(index)
+        available[index] = True
+    if not canonical:
+        raise ValueError("at least one valid SMILES is required for MolFormer export")
+
+    all_tokens: np.ndarray | None = None
+    all_padding_mask: np.ndarray | None = None
+    for start in range(0, len(canonical), batch_size):
+        batch_tokens, batch_padding_mask = producer.encode(
+            canonical[start : start + batch_size]
+        )
+        if all_tokens is None:
+            all_tokens = np.zeros(
+                (len(ids), *batch_tokens.shape[1:]), dtype=np.float32
+            )
+            all_padding_mask = np.ones(
+                (len(ids), batch_padding_mask.shape[1]), dtype=bool
+            )
+        batch_indices = valid_indices[start : start + len(batch_tokens)]
+        all_tokens[batch_indices] = batch_tokens
+        all_padding_mask[batch_indices] = batch_padding_mask
+    if all_tokens is None or all_padding_mask is None:
+        raise RuntimeError("MolFormer producer returned no token batches")
     return TokenFeatureArtifact.write(
         output_path,
         ids,
-        tokens,
-        padding_mask,
-        np.ones(len(ids), dtype=bool),
+        np.ascontiguousarray(all_tokens, dtype=np.float32),
+        np.ascontiguousarray(all_padding_mask, dtype=bool),
+        available,
         producer="molformer",
         producer_config={
             "model_id": producer.model_id,

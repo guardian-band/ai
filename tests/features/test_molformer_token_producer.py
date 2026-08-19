@@ -73,3 +73,28 @@ def test_molformer_export_writes_safe_artifact_in_batches(tmp_path):
     assert artifact.drug_ids == ("D1", "D2")
     assert artifact.tokens.shape == (2, 2, 3)
     assert artifact.metadata["producer_config"]["revision"] == "1" * 40
+
+
+def test_molformer_export_marks_invalid_smiles_unavailable(tmp_path):
+    producer = MolFormerTokenProducer(
+        FakeTokenizer(),
+        FakeModel(),
+        model_id="ibm-research/MoLFormer-XL-both-10pct",
+        revision="1" * 40,
+        max_length=4,
+        output_token_count=2,
+        device="cpu",
+    )
+    artifact = export_molformer_token_artifact(
+        producer,
+        drug_ids=["D3", "D1", "D2"],
+        smiles=["", "CC", None],
+        output_path=tmp_path / "molformer-missing.npz",
+        source_sha256="b" * 64,
+        batch_size=1,
+    )
+
+    assert artifact.drug_ids == ("D1", "D2", "D3")
+    assert artifact.available.tolist() == [True, False, False]
+    assert np.all(artifact.tokens[1:] == 0.0)
+    assert np.all(artifact.padding_mask[1:])

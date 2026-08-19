@@ -335,22 +335,39 @@ def export_mpnn_token_artifact(
         raise ValueError("drug_ids and smiles must be non-empty aligned sequences")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
-    graphs = [featurize_smiles(value) for value in values]
+    graphs: list[MolecularGraph] = []
+    valid_indices: list[int] = []
+    available = np.zeros(len(ids), dtype=bool)
+    for index, value in enumerate(values):
+        try:
+            graph = featurize_smiles(value)
+        except ValueError:
+            continue
+        graphs.append(graph)
+        valid_indices.append(index)
+        available[index] = True
+    if not graphs:
+        raise ValueError("at least one valid SMILES is required for MPNN export")
     model = model.to(device).eval()
-    token_batches: list[np.ndarray] = []
-    mask_batches: list[np.ndarray] = []
+    all_tokens = np.zeros(
+        (len(ids), model.token_count, model.hidden_dim), dtype=np.float32
+    )
+    all_padding_mask = np.ones((len(ids), model.token_count), dtype=bool)
     with torch.inference_mode():
         for start in range(0, len(graphs), batch_size):
             batch = collate_molecular_graphs(graphs[start : start + batch_size])
             tokens, padding_mask = model.encode_tokens(batch)
-            token_batches.append(tokens.to(dtype=torch.float32, device="cpu").numpy())
-            mask_batches.append(padding_mask.to(device="cpu").numpy())
+            batch_indices = valid_indices[start : start + batch.batch_size]
+            all_tokens[batch_indices] = tokens.to(
+                dtype=torch.float32, device="cpu"
+            ).numpy()
+            all_padding_mask[batch_indices] = padding_mask.to(device="cpu").numpy()
     return TokenFeatureArtifact.write(
         output_path,
         ids,
-        np.ascontiguousarray(np.concatenate(token_batches), dtype=np.float32),
-        np.ascontiguousarray(np.concatenate(mask_batches), dtype=bool),
-        np.ones(len(ids), dtype=bool),
+        np.ascontiguousarray(all_tokens, dtype=np.float32),
+        np.ascontiguousarray(all_padding_mask, dtype=bool),
+        available,
         producer="molecular_mpnn",
         producer_config={
             "hidden_dim": model.hidden_dim,

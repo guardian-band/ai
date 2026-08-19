@@ -76,3 +76,22 @@ def test_mpnn_checkpoint_and_token_export_are_reproducible(tmp_path):
     assert metadata["model_config"] == {"hidden_dim": 8, "layers": 2, "token_count": 4}
     assert artifact.drug_ids == ("D1", "D2")
     assert artifact.tokens.shape == (2, 4, 8)
+
+
+def test_mpnn_export_marks_invalid_smiles_unavailable(tmp_path):
+    torch.manual_seed(13)
+    model = MolecularMPNN(hidden_dim=8, layers=1, token_count=4).eval()
+    artifact = export_mpnn_token_artifact(
+        model,
+        drug_ids=["D3", "D1", "D2"],
+        smiles=[None, "CC", ""],
+        output_path=tmp_path / "mpnn-missing.npz",
+        source_sha256="c" * 64,
+        checkpoint_sha256="d" * 64,
+        batch_size=1,
+    )
+
+    assert artifact.drug_ids == ("D1", "D2", "D3")
+    assert artifact.available.tolist() == [True, False, False]
+    assert (artifact.tokens[1:] == 0).all()
+    assert artifact.padding_mask[1:].all()
