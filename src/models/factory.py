@@ -14,6 +14,16 @@ class UnsupportedModelConfiguration(ValueError):
     """Raised when a declared model needs unavailable benchmark features."""
 
 
+SUPPORTED_MODEL_TYPES = {
+    "prevalence",
+    "logistic",
+    "symmetric_mlp",
+    "morgan_graphsage_mlp",
+    "multimodal_teacher",
+    "distilled_pair_student",
+}
+
+
 def validate_model_type(config: Mapping[str, Any]) -> str:
     model_type = config.get("model_type") if isinstance(config, Mapping) else None
     if model_type == "unified":
@@ -24,9 +34,37 @@ def validate_model_type(config: Mapping[str, Any]) -> str:
         raise UnsupportedModelConfiguration(
             "model_type 'advanced' is unavailable: SIDER, ChemBERTa, and PrimeKG inputs are not present"
         )
-    if model_type not in {"prevalence", "logistic", "symmetric_mlp", "morgan_graphsage_mlp"}:
+    if model_type not in SUPPORTED_MODEL_TYPES:
         raise UnsupportedModelConfiguration(f"Unknown or missing model_type: {model_type!r}")
     return model_type
+
+
+def validate_precomputed_model_runner(config: Mapping[str, Any]) -> None:
+    """Reject new architectures before the manifest runner creates artifacts.
+
+    ``ManifestPolypharmacyDataset`` emits one legacy feature tensor per drug;
+    it cannot safely coerce that tensor into multimodal teacher inputs or
+    cached student tokens.  An explicit precomputed-token runner must be
+    connected before these model types are trained through this entry point.
+    """
+
+    model_type = config.get("model_type") if isinstance(config, Mapping) else None
+    if model_type not in {"multimodal_teacher", "distilled_pair_student"}:
+        return
+    artifact_key = (
+        "cached_token_artifact_path"
+        if model_type == "distilled_pair_student"
+        else "feature_artifact_path"
+    )
+    if not config.get(artifact_key):
+        raise UnsupportedModelConfiguration(
+            f"model_type '{model_type}' requires a validated precomputed artifact via "
+            f"{artifact_key}; ManifestPolypharmacyDataset cannot supply its token schema"
+        )
+    raise UnsupportedModelConfiguration(
+        f"model_type '{model_type}' is not connected to run_experiment: "
+        "use an explicit precomputed-token training entry point"
+    )
 
 
 def load_experiment_config(path: str | Path) -> dict[str, Any]:
@@ -44,9 +82,9 @@ def load_experiment_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Experiment config must define model_type")
     resolved = dict(raw)
     resolved["model_type"] = model_type.strip().lower()
-    if resolved["model_type"] not in {"prevalence", "logistic", "symmetric_mlp", "unified", "advanced", "morgan_graphsage_mlp"}:
+    if resolved["model_type"] not in SUPPORTED_MODEL_TYPES | {"unified", "advanced"}:
         raise UnsupportedModelConfiguration(
-            f"Unknown model_type '{model_type}'. Expected prevalence, logistic, symmetric_mlp, unified, or advanced."
+            f"Unknown model_type '{model_type}'. Expected a supported model type."
         )
     return resolved
 
@@ -192,4 +230,58 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
         return LogisticPairModel(input_dim=input_dim, num_labels=num_labels)
     if model_type in {"symmetric_mlp", "morgan_graphsage_mlp"}:
         return SymmetricMLPModel(input_dim=input_dim, num_labels=num_labels, config=config)
+    if model_type == "multimodal_teacher":
+        from src.models.multimodal_teacher_student import MultiModalTeacher
+
+        num_specific = config.get("num_specific", num_labels)
+        if num_specific != num_labels:
+            raise ValueError("multimodal_teacher num_specific must match num_labels")
+        required = (
+            "molecular_dim",
+            "kg_dim",
+            "molecular_token_count",
+            "kg_token_count",
+            "hidden_dim",
+            "num_organ",
+        )
+        missing = [key for key in required if key not in config]
+        if missing:
+            raise UnsupportedModelConfiguration(
+                f"multimodal_teacher requires explicit dimensions: {', '.join(missing)}"
+            )
+        return MultiModalTeacher(
+            morgan_dim=config.get("morgan_dim", input_dim),
+            molecular_dim=config["molecular_dim"],
+            kg_dim=config["kg_dim"],
+            molecular_token_count=config["molecular_token_count"],
+            kg_token_count=config["kg_token_count"],
+            hidden_dim=config["hidden_dim"],
+            num_organ=config["num_organ"],
+            num_specific=num_specific,
+            num_heads=config.get("num_heads", 4),
+            dropout=config.get("dropout", 0.0),
+            cache_token_count=config.get("cache_token_count", 8),
+            cache_token_dim=config.get("cache_token_dim", 128),
+        )
+    if model_type == "distilled_pair_student":
+        from src.models.multimodal_teacher_student import DistilledPairStudent
+
+        num_specific = config.get("num_specific", num_labels)
+        if num_specific != num_labels:
+            raise ValueError("distilled_pair_student num_specific must match num_labels")
+        required = ("token_dim", "token_count", "hidden_dim", "num_organ")
+        missing = [key for key in required if key not in config]
+        if missing:
+            raise UnsupportedModelConfiguration(
+                f"distilled_pair_student requires explicit dimensions: {', '.join(missing)}"
+            )
+        return DistilledPairStudent(
+            token_dim=config["token_dim"],
+            token_count=config["token_count"],
+            hidden_dim=config["hidden_dim"],
+            num_organ=config["num_organ"],
+            num_specific=num_specific,
+            num_heads=config.get("num_heads", 4),
+            dropout=config.get("dropout", 0.0),
+        )
     raise UnsupportedModelConfiguration(f"Unknown or missing model_type: {model_type!r}")

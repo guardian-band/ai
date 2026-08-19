@@ -77,9 +77,21 @@ def manifest_fixture(tmp_path):
     pairs_path = tmp_path / "pairs.parquet"
     triples_path = tmp_path / "triples.parquet"
     labels_path = tmp_path / "labels.json"
+    drug_features_path = tmp_path / "drug_features.parquet"
     pairs.to_parquet(pairs_path, index=False)
     triples.to_parquet(triples_path, index=False)
     labels_path.write_text(json.dumps(labels))
+    pd.DataFrame(
+        {
+            "drugbank_id": ["DB001", "DB002", "DB003", "DB004"],
+            "morgan_fingerprint": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+    ).to_parquet(drug_features_path, index=False)
     manifest = {
         "benchmark_id": "fixture",
         "seed": 7,
@@ -90,17 +102,21 @@ def manifest_fixture(tmp_path):
     }
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
-    return manifest_path, manifest
+    return manifest_path, manifest, drug_features_path
 
 
 def test_examples_are_loaded_from_fixture_artifacts(manifest_fixture):
-    manifest_path, manifest = manifest_fixture
+    manifest_path, manifest, drug_features_path = manifest_fixture
 
-    train = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
-    validation = ManifestPolypharmacyDataset.from_manifest(
-        manifest_path, manifest, split="validation"
+    train = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
     )
-    test = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="test")
+    validation = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="validation", drug_features_path=drug_features_path
+    )
+    test = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="test", drug_features_path=drug_features_path
+    )
 
     assert len(train) == 2
     assert len(validation) == 1
@@ -114,8 +130,10 @@ def test_examples_are_loaded_from_fixture_artifacts(manifest_fixture):
 
 
 def test_prevalence_model_matches_fixture_train_labels(manifest_fixture):
-    manifest_path, manifest = manifest_fixture
-    train = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
+    manifest_path, manifest, drug_features_path = manifest_fixture
+    train = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
+    )
     train_labels = torch.tensor([record["labels"] for record in train.records])
     model = PrevalenceModel(num_labels=train_labels.shape[1])
     model.fit(train_labels)
@@ -124,10 +142,14 @@ def test_prevalence_model_matches_fixture_train_labels(manifest_fixture):
 
 
 def test_repeated_loading_is_identical_and_features_are_order_stable(manifest_fixture):
-    manifest_path, manifest = manifest_fixture
+    manifest_path, manifest, drug_features_path = manifest_fixture
 
-    first = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
-    second = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
+    first = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
+    )
+    second = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
+    )
     for first_example, second_example in zip(first, second):
         for first_value, second_value in zip(first_example, second_example):
             if isinstance(first_value, torch.Tensor):
@@ -147,7 +169,7 @@ def test_repeated_loading_is_identical_and_features_are_order_stable(manifest_fi
     ],
 )
 def test_malformed_artifacts_fail_clearly(manifest_fixture, mutation, expected_message):
-    manifest_path, manifest = manifest_fixture
+    manifest_path, manifest, drug_features_path = manifest_fixture
     pairs_path = manifest_path.parent / manifest["pairs_path"]
     triples_path = manifest_path.parent / manifest["triples_path"]
     pairs = pd.read_parquet(pairs_path)
@@ -168,18 +190,24 @@ def test_malformed_artifacts_fail_clearly(manifest_fixture, mutation, expected_m
     triples.to_parquet(triples_path, index=False)
 
     with pytest.raises(ValueError, match=expected_message):
-        ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
+        ManifestPolypharmacyDataset.from_manifest(
+            manifest_path, manifest, split="train", drug_features_path=drug_features_path
+        )
 
 
 def test_test_split_can_be_loaded_only_when_requested(manifest_fixture):
-    manifest_path, manifest = manifest_fixture
+    manifest_path, manifest, drug_features_path = manifest_fixture
 
-    train = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="train")
+    train = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="train", drug_features_path=drug_features_path
+    )
     validation = ManifestPolypharmacyDataset.from_manifest(
-        manifest_path, manifest, split="validation"
+        manifest_path, manifest, split="validation", drug_features_path=drug_features_path
     )
     assert {record["split"] for record in train.records} == {"train"}
     assert {record["split"] for record in validation.records} == {"validation"}
 
-    test = ManifestPolypharmacyDataset.from_manifest(manifest_path, manifest, split="test")
+    test = ManifestPolypharmacyDataset.from_manifest(
+        manifest_path, manifest, split="test", drug_features_path=drug_features_path
+    )
     assert {record["split"] for record in test.records} == {"test"}

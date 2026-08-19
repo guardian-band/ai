@@ -28,7 +28,8 @@ def test_runner_passes_evaluator_metrics_to_completion_unchanged(monkeypatch, tm
             self.records = [{"labels": [1.0, 0.0]}] if split == "train" else [{"labels": [0.0, 0.0]}]
 
         @classmethod
-        def from_manifest(cls, _manifest_path, _manifest, *, split):
+        def from_manifest(cls, _manifest_path, _manifest, *, split, drug_features_path):
+            assert drug_features_path == "artifacts/morgan_fingerprints.parquet"
             return cls(split)
 
         def __len__(self):

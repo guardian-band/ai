@@ -93,3 +93,31 @@ def test_runner_has_no_dead_asymmetric_advanced_architecture():
     assert "class DummyEncoder" not in text
     assert "class AdvancedPolypharmacyModel" not in text
     assert "torch.cat([pooled_a, pooled_b]" not in text
+
+
+def test_multimodal_teacher_and_student_factory_dispatch():
+    from src.models.multimodal_teacher_student import MultiModalTeacher, DistilledPairStudent
+
+    teacher_config = {
+        "model_type": "multimodal_teacher",
+        "morgan_dim": 8,
+        "molecular_dim": 6,
+        "kg_dim": 5,
+        "molecular_token_count": 3,
+        "kg_token_count": 2,
+        "hidden_dim": 16,
+        "num_organ": 2,
+        "num_specific": 4,
+        "num_heads": 4,
+    }
+    student_config = {
+        "model_type": "distilled_pair_student",
+        "token_dim": 12,
+        "token_count": 5,
+        "hidden_dim": 16,
+        "num_organ": 2,
+        "num_specific": 4,
+        "num_heads": 4,
+    }
+    assert isinstance(create_model(teacher_config, num_labels=4), MultiModalTeacher)
+    assert isinstance(create_model(student_config, num_labels=4), DistilledPairStudent)

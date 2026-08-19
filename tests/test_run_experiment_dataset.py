@@ -25,7 +25,8 @@ def test_run_loads_test_dataset_only_after_validation_freeze(monkeypatch, tmp_pa
         labels = [{"index": index, "cui": f"C{index:03d}"} for index in range(100)]
 
         @classmethod
-        def from_manifest(cls, _manifest_path, _manifest, *, split):
+        def from_manifest(cls, _manifest_path, _manifest, *, split, drug_features_path):
+            assert drug_features_path == "artifacts/morgan_fingerprints.parquet"
             events.append(f"load:{split}")
             if split == "test":
                 assert events[-2] == "validation_frozen"

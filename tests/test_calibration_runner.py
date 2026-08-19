@@ -31,7 +31,8 @@ def test_runner_calibrates_raw_validation_logits_and_bounds_test_probabilities(
             self.records = [{"labels": labels}]
 
         @classmethod
-        def from_manifest(cls, _manifest_path, _manifest, *, split):
+        def from_manifest(cls, _manifest_path, _manifest, *, split, drug_features_path):
+            assert drug_features_path == "artifacts/morgan_fingerprints.parquet"
             return cls(split)
 
         def __len__(self):

@@ -18,6 +18,7 @@ from src.models.factory import (
     create_model,
     load_experiment_config,
     validate_model_type,
+    validate_precomputed_model_runner,
 )
 from src.evaluation.calibration import apply_temperature, calibrate_validation_logits
 from src.evaluation.metrics import compute_all_metrics
@@ -149,6 +150,7 @@ def run_single_experiment(experiment_config_path: str, manifest_path: str):
     manifest = verify_manifest(manifest_path)
     experiment_config = load_experiment_config(experiment_config_path)
     validate_model_type(experiment_config)
+    validate_precomputed_model_runner(experiment_config)
     
     seed = manifest["seed"]
     benchmark_id = manifest["benchmark_id"]

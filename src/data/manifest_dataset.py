@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from types import MappingProxyType
 
 import pandas as pd
 import torch
@@ -104,6 +106,94 @@ def _load_drug_features(parquet_path: Path) -> dict[str, torch.Tensor]:
     return features
 
 
+@dataclass(frozen=True)
+class ManifestRecords:
+    """Read-only ordered records and labels shared by all pair datasets."""
+
+    records: tuple[Mapping[str, Any], ...]
+    labels: tuple[Mapping[str, Any], ...]
+
+
+def load_manifest_records(
+    manifest_path: str | Path,
+    manifest: Mapping[str, Any],
+    split: str,
+) -> ManifestRecords:
+    """Validate manifest artifacts and return every selected pair in order."""
+
+    if split not in VALID_SPLITS:
+        raise ValueError(f"split must be one of {sorted(VALID_SPLITS)}")
+    manifest_path = Path(manifest_path).resolve()
+    scenario = manifest.get("scenario")
+    if not isinstance(scenario, str) or not scenario:
+        raise ValueError("Manifest must define a non-empty scenario")
+
+    pairs_path = _resolve_artifact_path(manifest_path, manifest, "pairs_path")
+    triples_path = _resolve_artifact_path(manifest_path, manifest, "triples_path")
+    labels_path = _resolve_artifact_path(manifest_path, manifest, "labels_path")
+    labels, cui_to_index = _read_json_labels(labels_path)
+    pairs = _read_parquet(pairs_path, PAIR_COLUMNS, "pairs.parquet")
+    triples = _read_parquet(triples_path, TRIPLE_COLUMNS, "triples.parquet")
+
+    if pairs["pair_id"].isna().any() or pairs["pair_id"].duplicated().any():
+        raise ValueError("pair_id values must be unique and non-null")
+    if pairs["scenario"].map(_normalize_status).ne(_normalize_status(scenario)).any():
+        raise ValueError("scenario values must match manifest scenario")
+    if pairs["split"].isna().any() or not set(pairs["split"].unique()).issubset(VALID_SPLITS):
+        raise ValueError(f"split values must be one of {sorted(VALID_SPLITS)}")
+    if pairs[["drug_a", "drug_b"]].isna().any().any():
+        raise ValueError("pairs.parquet drug_a and drug_b values must be non-null")
+
+    pair_by_id = pairs.set_index("pair_id", drop=False)
+    source_pair_ids = pairs["source_positive_pair_id"].dropna()
+    unknown_source_ids = set(source_pair_ids) - set(pair_by_id.index)
+    if unknown_source_ids:
+        raise ValueError("source_positive_pair_id references unknown pair_id")
+    if triples[sorted(TRIPLE_COLUMNS)].isna().any().any():
+        raise ValueError("triples.parquet required values must be non-null")
+    unknown_pair_ids = set(triples["pair_id"].dropna()) - set(pair_by_id.index)
+    if unknown_pair_ids:
+        raise ValueError("triples.parquet references unknown pair_id")
+    for row in triples.itertuples(index=False):
+        pair = pair_by_id.loc[row.pair_id]
+        if str(row.drug_a) != str(pair.drug_a) or str(row.drug_b) != str(pair.drug_b):
+            raise ValueError("triples.parquet drug IDs must match their pair_id")
+    unknown_cuis = set(triples["label_cui"].dropna()) - set(cui_to_index)
+    if unknown_cuis:
+        raise ValueError("label_cui values must exist in labels.json")
+
+    selected_pairs = pairs[pairs["split"] == split].sort_values("pair_id").reset_index(drop=True)
+    selected_ids = set(selected_pairs["pair_id"])
+    selected_triples = triples[triples["pair_id"].isin(selected_ids)]
+    labels_by_pair: dict[Any, list[str]] = {pair_id: [] for pair_id in selected_ids}
+    for row in selected_triples.itertuples(index=False):
+        if _normalize_status(row.observation_status) in POSITIVE_STATUSES:
+            labels_by_pair[row.pair_id].append(str(row.label_cui))
+
+    records: list[Mapping[str, Any]] = []
+    for pair in selected_pairs.itertuples(index=False):
+        pair_id = pair.pair_id
+        label_vector = [0.0] * len(labels)
+        for cui in labels_by_pair[pair_id]:
+            label_vector[cui_to_index[cui]] = 1.0
+        is_positive = _normalize_status(pair.observation_status) in POSITIVE_STATUSES
+        is_positive = is_positive or bool(label_vector.count(1.0))
+        records.append(
+            MappingProxyType(
+                {
+                    "pair_id": pair_id,
+                    "drug_a": str(pair.drug_a),
+                    "drug_b": str(pair.drug_b),
+                    "split": pair.split,
+                    "labels": tuple(label_vector),
+                    "is_observed_positive": is_positive,
+                }
+            )
+        )
+    frozen_labels = tuple(MappingProxyType(dict(record)) for record in labels)
+    return ManifestRecords(tuple(records), frozen_labels)
+
+
 class ManifestPolypharmacyDataset(Dataset):
     """Validated, deterministic one-row-per-pair benchmark dataset."""
 
@@ -140,72 +230,12 @@ class ManifestPolypharmacyDataset(Dataset):
     ) -> "ManifestPolypharmacyDataset":
         if split not in VALID_SPLITS:
             raise ValueError(f"split must be one of {sorted(VALID_SPLITS)}")
-        manifest_path = Path(manifest_path).resolve()
-        scenario = manifest.get("scenario")
-        if not isinstance(scenario, str) or not scenario:
-            raise ValueError("Manifest must define a non-empty scenario")
-
-        pairs_path = _resolve_artifact_path(manifest_path, manifest, "pairs_path")
-        triples_path = _resolve_artifact_path(manifest_path, manifest, "triples_path")
-        labels_path = _resolve_artifact_path(manifest_path, manifest, "labels_path")
-        labels, cui_to_index = _read_json_labels(labels_path)
-        pairs = _read_parquet(pairs_path, PAIR_COLUMNS, "pairs.parquet")
-        triples = _read_parquet(triples_path, TRIPLE_COLUMNS, "triples.parquet")
-
-        if pairs["pair_id"].isna().any() or pairs["pair_id"].duplicated().any():
-            raise ValueError("pair_id values must be unique and non-null")
-        if pairs["scenario"].map(_normalize_status).ne(_normalize_status(scenario)).any():
-            raise ValueError("scenario values must match manifest scenario")
-        if pairs["split"].isna().any() or not set(pairs["split"].unique()).issubset(VALID_SPLITS):
-            raise ValueError(f"split values must be one of {sorted(VALID_SPLITS)}")
-        if pairs[["drug_a", "drug_b"]].isna().any().any():
-            raise ValueError("pairs.parquet drug_a and drug_b values must be non-null")
-
-        pair_by_id = pairs.set_index("pair_id", drop=False)
-        source_pair_ids = pairs["source_positive_pair_id"].dropna()
-        unknown_source_ids = set(source_pair_ids) - set(pair_by_id.index)
-        if unknown_source_ids:
-            raise ValueError("source_positive_pair_id references unknown pair_id")
-        if triples[sorted(TRIPLE_COLUMNS)].isna().any().any():
-            raise ValueError("triples.parquet required values must be non-null")
-        unknown_pair_ids = set(triples["pair_id"].dropna()) - set(pair_by_id.index)
-        if unknown_pair_ids:
-            raise ValueError("triples.parquet references unknown pair_id")
-        for row in triples.itertuples(index=False):
-            pair = pair_by_id.loc[row.pair_id]
-            if str(row.drug_a) != str(pair.drug_a) or str(row.drug_b) != str(pair.drug_b):
-                raise ValueError("triples.parquet drug IDs must match their pair_id")
-        unknown_cuis = set(triples["label_cui"].dropna()) - set(cui_to_index)
-        if unknown_cuis:
-            raise ValueError("label_cui values must exist in labels.json")
-
-        selected_pairs = pairs[pairs["split"] == split].sort_values("pair_id").reset_index(drop=True)
-        selected_ids = set(selected_pairs["pair_id"])
-        selected_triples = triples[triples["pair_id"].isin(selected_ids)]
-        labels_by_pair: dict[Any, list[str]] = {pair_id: [] for pair_id in selected_ids}
-        for row in selected_triples.itertuples(index=False):
-            if _normalize_status(row.observation_status) in POSITIVE_STATUSES:
-                labels_by_pair[row.pair_id].append(str(row.label_cui))
-
-        records: list[dict[str, Any]] = []
-        for pair in selected_pairs.itertuples(index=False):
-            pair_id = pair.pair_id
-            label_vector = [0.0] * len(labels)
-            for cui in labels_by_pair[pair_id]:
-                label_vector[cui_to_index[cui]] = 1.0
-            is_positive = _normalize_status(pair.observation_status) in POSITIVE_STATUSES
-            is_positive = is_positive or bool(label_vector.count(1.0))
-            records.append(
-                {
-                    "pair_id": pair_id,
-                    "drug_a": str(pair.drug_a),
-                    "drug_b": str(pair.drug_b),
-                    "split": pair.split,
-                    "labels": label_vector,
-                    "is_observed_positive": is_positive,
-                }
-            )
-        return cls(records, labels, drug_features_path=drug_features_path)
+        parsed = load_manifest_records(manifest_path, manifest, split)
+        return cls(
+            [dict(record, labels=list(record["labels"])) for record in parsed.records],
+            [dict(label) for label in parsed.labels],
+            drug_features_path=drug_features_path,
+        )
 
     def __len__(self) -> int:
         return len(self.records)
