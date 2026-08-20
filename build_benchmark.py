@@ -393,18 +393,59 @@ def _controls_for_scenario(
     }
 
 
-def _labels_json(triples: pd.DataFrame, side_effects: pd.DataFrame, train_ids: set[str], split_ids: dict[str, set[str]], top_k: int) -> dict[str, Any]:
-    train = triples[triples.pair_id.isin(train_ids)]
-    counts = train.groupby("label_cui")["pair_id"].nunique().sort_values(ascending=False, kind="mergesort")
+def _canonical_labels_json(
+    triples: pd.DataFrame,
+    side_effects: pd.DataFrame,
+    top_k: int,
+) -> dict[str, Any]:
+    """Freeze one label vocabulary before scenario/seed splitting.
+
+    Label selection is part of the benchmark task definition.  Selecting the
+    vocabulary independently inside every training split silently changes the
+    prediction task across seeds and makes aggregate metrics incomparable.
+    """
+
+    counts = triples.groupby("label_cui")["pair_id"].nunique().sort_values(
+        ascending=False, kind="mergesort"
+    )
     ordered = sorted(counts.items(), key=lambda item: (-int(item[1]), str(item[0])))[:top_k]
     selected = {cui for cui, _ in ordered}
     names = dict(zip(side_effects["umls_cui_from_meddra"].astype(str), side_effects["side_effect_name"].astype(str)))
-    labels = [{"index": index, "cui": str(cui), "name": names.get(str(cui), ""), "train_positive_count": int(count)} for index, (cui, count) in enumerate(ordered)]
+    labels = [
+        {
+            "index": index,
+            "cui": str(cui),
+            "name": names.get(str(cui), ""),
+            "global_positive_pair_count": int(count),
+        }
+        for index, (cui, count) in enumerate(ordered)
+    ]
+    return {
+        "labels": labels,
+        "selection_scope": "all_canonical_positive_pairs_before_splitting",
+        "top_k": int(top_k),
+        "selected_cuis": sorted(selected),
+    }
+
+
+def _label_split_diagnostics(
+    triples: pd.DataFrame,
+    split_ids: dict[str, set[str]],
+    selected: set[str],
+) -> dict[str, Any]:
+    train = triples[triples.pair_id.isin(split_ids["train"])]
+    train_counts = train[train.label_cui.isin(selected)].groupby("label_cui")["pair_id"].nunique()
     oov = {}
     for split, ids in split_ids.items():
         subset = triples[triples.pair_id.isin(ids)]
         oov[split] = int((~subset.label_cui.isin(selected)).sum())
-    return {"labels": labels, "selection_split": "train", "top_k": int(top_k), "out_of_vocabulary_positive_counts": oov, "selected_cuis": sorted(selected)}
+    return {
+        "train_positive_counts": {
+            cui: int(train_counts.get(cui, 0)) for cui in sorted(selected)
+        },
+        "all_labels_present_in_train": all(int(train_counts.get(cui, 0)) > 0 for cui in selected),
+        "out_of_vocabulary_positive_counts": oov,
+    }
 
 
 def _git_sha() -> str:
@@ -426,6 +467,7 @@ def _write_manifest_artifacts(
     input_counts: dict[str, int],
     positive_splits: dict[str, pd.DataFrame],
     split_sets: tuple[set[str], set[str], set[str]] | None,
+    canonical_labels: dict[str, Any],
 ) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     existing_manifest = target / "manifest.json"
@@ -447,8 +489,9 @@ def _write_manifest_artifacts(
         if not pairs["pair_id"].is_unique:
             raise ValueError("pairs.parquet pair_id values must be unique")
         split_ids = {split: set(frame.pair_id) for split, frame in positive_splits.items()}
-        labels_payload = _labels_json(triples, side_effects, split_ids["train"], split_ids, config["top_k_labels"])
+        labels_payload = canonical_labels
         selected = set(labels_payload["selected_cuis"])
+        label_diagnostics = _label_split_diagnostics(triples, split_ids, selected)
         triples_out = triples[triples.label_cui.isin(selected)].copy()
         triples_out = triples_out[triples_out.pair_id.isin(set(pairs.pair_id))]
         triples_out = triples_out[["pair_id", "drug_a", "drug_b", "label_cui", "observation_status"]].sort_values(["pair_id", "label_cui"]).reset_index(drop=True)
@@ -463,6 +506,7 @@ def _write_manifest_artifacts(
             "no_pair_overlap": check_no_overlap(train_df, val_df, test_df),
             "pair_references_valid": set(triples_out.pair_id).issubset(set(pairs.pair_id)),
             "control_references_valid": set(controls.source_positive_pair_id).issubset(set(positives.pair_id)),
+            "all_labels_present_in_train": label_diagnostics["all_labels_present_in_train"],
         }
         if scenario == "cold_1" and split_sets:
             validators["cold_endpoint_rules"] = check_cold_1_test_endpoints(test_df, split_sets[0], split_sets[2]) and check_no_test_new_in_train_val(train_df, val_df, split_sets[2])
@@ -521,6 +565,7 @@ def _write_manifest_artifacts(
             "triples_sha256": artifact_hashes["triples.parquet"],
             "labels_sha256": artifact_hashes["labels.json"],
             "sampler_diagnostics": {**sampler, "similarity_matching": similarity_status},
+            "label_diagnostics": label_diagnostics,
             "validator_results": validators,
             "pairs_path": "pairs.parquet",
             "triples_path": "triples.parquet",
@@ -561,6 +606,9 @@ def build_benchmarks(config_path: str | Path, output_root: str | Path | None = N
     sources = _resolve_sources(config_path, config)
     drugs, side_effects, combo = _read_sources(sources)
     triples, input_counts = _canonical_triples(drugs, side_effects, combo, return_counts=True)
+    canonical_labels = _canonical_labels_json(
+        triples, side_effects, config["top_k_labels"]
+    )
     positive_pairs = _pair_table(triples)
     root = Path(output_root or "artifacts/benchmarks").resolve() / config["benchmark_name"]
     # Preflight every split and sampler before writing any manifest.  This
@@ -590,7 +638,7 @@ def build_benchmarks(config_path: str | Path, output_root: str | Path | None = N
             prepared.append((seed, scenario, split_frames, sets))
     manifests = []
     for seed, scenario, split_frames, sets in prepared:
-        manifests.append(_write_manifest_artifacts(root / scenario / f"seed_{seed}", scenario, seed, config, sources, drugs, side_effects, triples, input_counts, split_frames, sets))
+        manifests.append(_write_manifest_artifacts(root / scenario / f"seed_{seed}", scenario, seed, config, sources, drugs, side_effects, triples, input_counts, split_frames, sets, canonical_labels))
     return manifests
 
 

@@ -90,6 +90,8 @@ def test_builds_all_scenarios_and_seeds_with_verified_manifests(tmp_path):
     config_path = _config(tmp_path, tmp_path / "out")
     output = build_benchmarks(config_path, tmp_path / "out")
     assert len(output) == 6
+    label_hashes = set()
+    ordered_label_cuis = set()
     for manifest_path in sorted((tmp_path / "out").rglob("manifest.json")):
         manifest = verify_manifest(str(manifest_path))
         assert manifest["benchmark_id"] == "tiny_benchmark"
@@ -98,6 +100,10 @@ def test_builds_all_scenarios_and_seeds_with_verified_manifests(tmp_path):
         assert (manifest_path.parent / manifest["triples_path"]).exists()
         labels = json.loads((manifest_path.parent / manifest["labels_path"]).read_text())
         assert [label["index"] for label in labels["labels"]] == list(range(len(labels["labels"])))
+        assert labels["selection_scope"] == "all_canonical_positive_pairs_before_splitting"
+        label_hashes.add(manifest["labels_sha256"])
+        ordered_label_cuis.add(tuple(label["cui"] for label in labels["labels"]))
+        assert manifest["label_diagnostics"]["all_labels_present_in_train"]
         pairs = pd.read_parquet(manifest_path.parent / manifest["pairs_path"])
         assert pairs.columns.tolist() == ["pair_id", "drug_a", "drug_b", "split", "scenario", "observation_status", "source_positive_pair_id"]
         assert pairs["pair_id"].is_unique
@@ -121,6 +127,8 @@ def test_builds_all_scenarios_and_seeds_with_verified_manifests(tmp_path):
         else:
             assert all(a in split_drugs["validation"] and b in split_drugs["validation"] for a, b in pairs.loc[pairs.split == "validation", ["drug_a", "drug_b"]].itertuples(index=False, name=None))
             assert all(a in split_drugs["test"] and b in split_drugs["test"] for a, b in pairs.loc[pairs.split == "test", ["drug_a", "drug_b"]].itertuples(index=False, name=None))
+    assert len(label_hashes) == 1
+    assert len(ordered_label_cuis) == 1
 
 
 def test_build_is_deterministic_and_controls_have_new_ids(tmp_path):

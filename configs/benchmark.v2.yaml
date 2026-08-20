@@ -1,0 +1,37 @@
+schema_version: 1
+benchmark_name: polypharmacy_v2
+seeds: [42, 101, 2024, 31415, 27182]
+top_k_labels: 100
+
+paths:
+  drugs_master: ../data/raw/drugs_master.csv
+  side_effects: ../data/raw/side_effects.csv
+  biosnap_ddi: ../data/external/ChChSe-Decagon_polypharmacy.csv
+  sider: ../data/external/meddra_all_se.tsv
+  primekg: ../data/external/primekg_kg.csv
+
+partitions:
+  warm_pair:
+    train_fraction: 0.70
+    validation_fraction: 0.15
+    test_fraction: 0.15
+  cold_1:
+    train_drug_fraction: 0.70
+    validation_new_drug_fraction: 0.10
+    test_new_drug_fraction: 0.20
+  cold_2:
+    train_drug_fraction: 0.70
+    validation_new_drug_fraction: 0.10
+    test_new_drug_fraction: 0.20
+
+sampling:
+  controls_per_positive_pair: 1
+  primekg_degree_bins: 10
+  molecular_similarity_bins: 5
+  maximum_attempts_per_control: 100
+  pu_prior_multipliers: [1.0, 2.0, 4.0]
+
+bootstrap:
+  resamples: 2000
+  confidence_level: 0.95
+  seed: 8675309
