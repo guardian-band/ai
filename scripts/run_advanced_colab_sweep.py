@@ -16,6 +16,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 STAGES = ("hgt", "assemble", "teacher_config", "teacher", "cache", "student_config", "student")
 SCENARIOS = ("warm_pair", "cold_1", "cold_2")
 DEFAULT_SEEDS = (42, 101, 2024, 27182, 31415)

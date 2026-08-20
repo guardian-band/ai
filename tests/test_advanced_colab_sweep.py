@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -33,6 +35,38 @@ def test_v2_template_contains_only_per_run_stages():
     assert list(payload["stages"]) == [
         "hgt", "assemble", "teacher_config", "teacher", "cache", "student_config", "student"
     ]
+
+
+def test_sweep_script_can_import_project_modules_when_executed_by_path(tmp_path):
+    (tmp_path / "labels.json").write_text(
+        json.dumps({"labels": [{"cui": "C0004144", "name": "Atelectasis"}]})
+    )
+    (tmp_path / "manifest.json").write_text(json.dumps({"labels_path": "labels.json"}))
+    (tmp_path / "hierarchy.json").write_text(
+        json.dumps(
+            {
+                "organ_order": ["Respiratory & Thoracic (Lungs)"],
+                "mappings": [],
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import runpy,sys; from pathlib import Path; "
+                "scope=runpy.run_path('scripts/run_advanced_colab_sweep.py'); "
+                "scope['ensure_manifest_hierarchy'](Path(sys.argv[1]),Path(sys.argv[2]))"
+            ),
+            str(tmp_path / "hierarchy.json"),
+            str(tmp_path / "manifest.json"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_manifest_hierarchy_is_completed_deterministically(tmp_path):
