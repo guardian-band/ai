@@ -472,10 +472,19 @@ def run_precomputed_experiment(
     if patience <= 0:
         raise ValueError("patience must be a positive integer")
     best_ap = -float("inf")
+    best_epoch = 0
     stale = 0
     epochs = int(plan.config["epochs"])
+    model_name = "student" if student_mode else "teacher"
+    print(
+        f"[training] model={model_name} epochs={epochs} patience={patience} "
+        f"batches_per_epoch={len(train_loader)}",
+        flush=True,
+    )
     for _epoch in range(epochs):
         model.train()
+        epoch_loss_sum = 0.0
+        epoch_example_count = 0
         batches = zip(train_loader, teacher_train_loader) if student_mode else ((batch, None) for batch in train_loader)
         for batch, teacher_batch in batches:
             values = _teacher_or_student_batch(batch, device, student_mode)
@@ -505,24 +514,53 @@ def run_precomputed_experiment(
                     + float(plan.config["hierarchy_weight"])
                     * hierarchy_loss(output.specific_logits, output.organ_logits)
                 )
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"non-finite training loss at epoch {_epoch + 1}")
             loss.backward()
             optimizer.step()
+            batch_example_count = int(values[-1].shape[0])
+            epoch_loss_sum += float(loss.detach().cpu()) * batch_example_count
+            epoch_example_count += batch_example_count
+        if epoch_example_count == 0:
+            raise RuntimeError(f"no training examples were processed at epoch {_epoch + 1}")
+        train_loss = epoch_loss_sum / epoch_example_count
         val_logits, val_targets = _predict(model, validation_loader, device, student_mode)
         val_ap = _require_defined_macro_ap(_macro_ap(val_logits, val_targets))
+        checkpoint_saved = False
         if not (run_dir / "checkpoint_best.pt").is_file() or (
             np.isfinite(val_ap) and val_ap > best_ap
         ):
             best_ap = val_ap
+            best_epoch = _epoch + 1
             stale = 0
             torch.save(model.state_dict(), run_dir / "checkpoint_best.pt")
+            checkpoint_saved = True
         else:
             stale += 1
-            if stale >= patience:
-                break
+        print(
+            f"[epoch {_epoch + 1:02d}/{epochs:02d}] model={model_name} "
+            f"train_loss={train_loss:.6f} val_macro_auprc={val_ap:.6f} "
+            f"best_val_macro_auprc={best_ap:.6f} patience={stale}/{patience} "
+            f"checkpoint={'saved' if checkpoint_saved else 'kept'}",
+            flush=True,
+        )
+        if stale >= patience:
+            print(
+                f"[early-stop] model={model_name} epoch={_epoch + 1} "
+                f"best_epoch={best_epoch}",
+                flush=True,
+            )
+            break
     if not (run_dir / "checkpoint_best.pt").is_file():
         raise RuntimeError("no validation-selected checkpoint was produced")
     model.load_state_dict(torch.load(run_dir / "checkpoint_best.pt", map_location=device, weights_only=True))
+    print(
+        f"[selected] model={model_name} best_epoch={best_epoch} "
+        f"best_val_macro_auprc={best_ap:.6f}",
+        flush=True,
+    )
     trainer.model_selected()
+    print("[phase] validation calibration and threshold selection", flush=True)
     val_logits, val_targets = _predict(model, validation_loader, device, student_mode)
     labels = _label_names(plan.validation_dataset)
     val_logits_frame = pd.DataFrame(val_logits, columns=labels)
@@ -533,6 +571,7 @@ def run_precomputed_experiment(
     (run_dir / "calibration.json").write_text(json.dumps({"temperatures": temperatures, "input": "validation_raw_logits"}, indent=2))
     (run_dir / "thresholds.json").write_text(json.dumps(thresholds, indent=2))
     trainer.validation_frozen()
+    print("[phase] test inference and metric computation", flush=True)
     test_dataset = _construct_test_dataset_after_freeze(plan, student_mode, trainer)
     test_loader = DataLoader(test_dataset, batch_size=int(plan.config["batch_size"]))
     test_logits, test_targets = _predict(model, test_loader, device, student_mode)
@@ -540,6 +579,14 @@ def run_precomputed_experiment(
     _persist_prediction_artifacts(str(run_dir), "test", test_dataset, test_logits, test_targets, test_probs)
     trainer.evaluate_test()
     metrics = compute_all_metrics(pd.DataFrame(test_targets, columns=labels), pd.DataFrame(test_probs, columns=labels), thresholds, train_prevalences)
+    print(
+        f"[test] model={model_name} micro_auprc={metrics['micro_ap']:.6f} "
+        f"macro_auprc={metrics['macro_ap']:.6f} "
+        f"micro_auroc={metrics['micro_auroc']:.6f} "
+        f"macro_auroc={metrics['macro_auroc']:.6f} "
+        f"brier={metrics['brier_score']:.6f} ece={metrics['ece_15']:.6f}",
+        flush=True,
+    )
     _persist_per_label_metrics(str(run_dir), metrics)
     trainer.complete(metrics, required_artifacts=REQUIRED_RUN_ARTIFACTS)
     return None

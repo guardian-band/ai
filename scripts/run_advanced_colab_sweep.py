@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from typing import Iterable
 
 import yaml
@@ -118,6 +119,39 @@ def _backup_stage(backup: Path, marker: Path, outputs: list[Path], scenario: str
     marker.write_text(json.dumps({"scenario": scenario, "seed": seed, "stage": stage, "files": hashes}, indent=2, sort_keys=True))
 
 
+def _gpu_status() -> str:
+    try:
+        return subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "unavailable"
+
+
+def _run_live(command: list[str], *, stage: str) -> None:
+    started = time.monotonic()
+    process = subprocess.Popen(command, cwd=ROOT)
+    while True:
+        try:
+            return_code = process.wait(timeout=30)
+            break
+        except subprocess.TimeoutExpired:
+            elapsed = (time.monotonic() - started) / 60
+            print(
+                f"HEARTBEAT {stage}: {elapsed:.1f} min | "
+                f"GPU %, used MB, total MB: {_gpu_status()}",
+                flush=True,
+            )
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
+
+
 def run_one(scenario: str, seed: int, template: Path, drive_root: Path, dry_run: bool) -> None:
     config_path = ROOT / "artifacts" / "configs" / f"pipeline_v2_{scenario}_seed_{seed}.yaml"
     rendered = render_config(template, config_path, scenario, seed)
@@ -135,7 +169,7 @@ def run_one(scenario: str, seed: int, template: Path, drive_root: Path, dry_run:
             continue
         command = [sys.executable, "-u", str(ROOT / "run_advanced_pipeline.py"), "--config", str(config_path), "--start-at", stage, "--stop-after", stage]
         print(f"[{number}/{len(STAGES)}] RUN: {scenario}/seed_{seed}/{stage}", flush=True)
-        subprocess.run(command, cwd=ROOT, check=True)
+        _run_live(command, stage=f"{scenario}/seed_{seed}/{stage}")
         outputs = expected_outputs(stage, scenario, seed, manifest["manifest_hash"])
         _backup_stage(backup, marker, outputs, scenario, seed, stage)
         if not _marker_valid(marker):
