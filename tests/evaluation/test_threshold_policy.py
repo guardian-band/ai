@@ -5,6 +5,26 @@ import pytest
 from src.evaluation.thresholds import find_best_threshold, select_thresholds
 
 
+def _naive_threshold(y_true, y_prob, min_ppv, objective):
+    candidates = np.unique(np.concatenate(([0.0], y_prob, [1.0])))
+    evaluated = []
+    for threshold in candidates:
+        predicted = y_prob >= threshold
+        tp = float(np.sum(predicted & (y_true == 1.0)))
+        fp = float(np.sum(predicted & (y_true == 0.0)))
+        fn = float(np.sum(~predicted & (y_true == 1.0)))
+        ppv = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * ppv * recall / (ppv + recall) if ppv + recall else 0.0
+        evaluated.append((float(threshold), ppv, recall, f1))
+    if objective == "max_f1":
+        return max(evaluated, key=lambda item: (item[3], item[0]))
+    eligible = [item for item in evaluated if item[1] >= min_ppv]
+    if eligible:
+        return max(eligible, key=lambda item: (item[2], item[1], item[0]))
+    return max(evaluated, key=lambda item: (item[3], item[0]))
+
+
 def test_global_max_f1_does_not_fall_back_to_zero_threshold():
     result = find_best_threshold(
         np.array([1, 0, 1, 0]),
@@ -100,3 +120,23 @@ def test_select_thresholds_rejects_column_mismatch_and_invalid_probability():
         select_thresholds(
             pd.DataFrame({"A": [1, 0]}), pd.DataFrame({"A": [1.2, 0.4]})
         )
+
+
+@pytest.mark.parametrize("objective", ["max_f1", "max_recall_at_min_ppv"])
+def test_vectorized_threshold_selection_matches_exhaustive_policy(objective):
+    rng = np.random.default_rng(2024)
+    for size in (2, 7, 31, 200):
+        for _ in range(10):
+            truth = rng.integers(0, 2, size=size).astype(float)
+            probabilities = np.round(rng.random(size), 2)
+            expected = _naive_threshold(truth, probabilities, 0.5, objective)
+            actual = find_best_threshold(
+                truth,
+                probabilities,
+                min_ppv=0.5,
+                objective=objective,
+            )
+            assert actual["threshold"] == pytest.approx(expected[0])
+            assert actual["ppv"] == pytest.approx(expected[1])
+            assert actual["recall"] == pytest.approx(expected[2])
+            assert actual["f1"] == pytest.approx(expected[3])

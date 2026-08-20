@@ -72,32 +72,76 @@ def find_best_threshold(
         raise ValueError("min_ppv must be in [0, 1]")
 
     true_valid, prob_valid = _prepare_arrays(y_true, y_prob)
-    candidates = np.unique(np.concatenate(([0.0], prob_valid, [1.0])))
-    evaluated = [
-        (float(threshold), _candidate_metrics(true_valid, prob_valid, float(threshold)))
-        for threshold in candidates
-    ]
+    sorted_indices = np.argsort(prob_valid, kind="mergesort")
+    sorted_probabilities = prob_valid[sorted_indices]
+    sorted_positives = true_valid[sorted_indices] == 1.0
+    candidates = np.unique(
+        np.concatenate(([0.0], sorted_probabilities, [1.0]))
+    )
+    candidate_indices = np.searchsorted(
+        sorted_probabilities, candidates, side="left"
+    )
+    suffix_true_positives = np.empty(sorted_positives.size + 1, dtype=np.int64)
+    suffix_true_positives[-1] = 0
+    suffix_true_positives[:-1] = np.cumsum(
+        sorted_positives[::-1], dtype=np.int64
+    )[::-1]
+    true_positives = suffix_true_positives[candidate_indices].astype(float)
+    predicted_positives = (sorted_positives.size - candidate_indices).astype(float)
+    false_positives = predicted_positives - true_positives
+    total_positives = float(np.sum(sorted_positives))
+    false_negatives = total_positives - true_positives
+    ppv = np.divide(
+        true_positives,
+        predicted_positives,
+        out=np.zeros_like(true_positives),
+        where=predicted_positives > 0,
+    )
+    recall_denominator = true_positives + false_negatives
+    recall = np.divide(
+        true_positives,
+        recall_denominator,
+        out=np.zeros_like(true_positives),
+        where=recall_denominator > 0,
+    )
+    f1_denominator = ppv + recall
+    f1 = np.divide(
+        2.0 * ppv * recall,
+        f1_denominator,
+        out=np.zeros_like(ppv),
+        where=f1_denominator > 0,
+    )
+
+    def max_f1_index() -> int:
+        # Candidates are ascending, so the final matching index implements
+        # the existing higher-threshold tie break.
+        return int(np.flatnonzero(f1 == np.max(f1))[-1])
 
     if objective == "max_f1":
-        threshold, metrics = max(evaluated, key=lambda item: (item[1]["f1"], item[0]))
+        selected_index = max_f1_index()
         rule = "max_f1"
     else:
-        eligible = [item for item in evaluated if item[1]["selected_ppv"] >= min_ppv]
-        if eligible:
-            threshold, metrics = max(
-                eligible,
-                key=lambda item: (
-                    item[1]["recall"],
-                    item[1]["selected_ppv"],
-                    item[0],
-                ),
-            )
+        eligible = np.flatnonzero(ppv >= min_ppv)
+        if eligible.size:
+            best_recall = np.max(recall[eligible])
+            eligible = eligible[recall[eligible] == best_recall]
+            best_ppv = np.max(ppv[eligible])
+            eligible = eligible[ppv[eligible] == best_ppv]
+            selected_index = int(eligible[-1])
             rule = f"max_recall_at_ppv_{float(min_ppv)}"
         else:
-            threshold, metrics = max(evaluated, key=lambda item: (item[1]["f1"], item[0]))
+            selected_index = max_f1_index()
             rule = "max_f1"
 
-    return {"threshold": float(threshold), "rule": rule, **metrics}
+    return {
+        "threshold": float(candidates[selected_index]),
+        "rule": rule,
+        "selected_ppv": float(ppv[selected_index]),
+        "ppv": float(ppv[selected_index]),
+        "recall": float(recall[selected_index]),
+        "f1": float(f1[selected_index]),
+        "positive_count": int(total_positives),
+    }
 
 
 def select_thresholds(

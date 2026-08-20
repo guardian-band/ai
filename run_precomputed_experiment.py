@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import time
 from typing import Any, Mapping
 
 import numpy as np
@@ -570,7 +571,13 @@ def run_precomputed_experiment(
         f"[calibration] model={model_name} temperature={temperatures['specific']:.6f}",
         flush=True,
     )
+    threshold_started = time.monotonic()
     thresholds = select_thresholds(val_targets_frame, calibrated["specific"])
+    print(
+        f"[thresholds] model={model_name} labels={len(thresholds)} "
+        f"elapsed_seconds={time.monotonic() - threshold_started:.3f}",
+        flush=True,
+    )
     _persist_prediction_artifacts(str(run_dir), "validation", plan.validation_dataset, val_logits, val_targets, calibrated["specific"].to_numpy())
     (run_dir / "calibration.json").write_text(json.dumps({"temperatures": temperatures, "input": "validation_raw_logits"}, indent=2))
     (run_dir / "thresholds.json").write_text(json.dumps(thresholds, indent=2))
