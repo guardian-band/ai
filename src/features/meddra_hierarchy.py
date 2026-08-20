@@ -28,7 +28,8 @@ MEDDRA_SOC_MAP = {
     ],
     'Respiratory & Thoracic (Lungs)': [
         'pulmonary', 'asthma', 'cough', 'dyspnea', 'bronchitis', 'pneumonia',
-        'bronchospasm', 'lung', 'respiratory', 'pharyngitis', 'rhinitis', 'pleural', 'sinusitis'
+        'bronchospasm', 'lung', 'respiratory', 'pharyngitis', 'rhinitis', 'pleural',
+        'sinusitis', 'atelectasis'
     ],
     'Hematologic & Lymphatic (Blood)': [
         'anemia', 'leukopenia', 'thrombocytopenia', 'hemorrhage', 'bleeding',

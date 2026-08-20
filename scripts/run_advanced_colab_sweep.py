@@ -75,6 +75,39 @@ def _manifest(scenario: str, seed: int) -> tuple[Path, dict]:
     return path, payload
 
 
+def ensure_manifest_hierarchy(hierarchy_path: Path, manifest_path: Path) -> list[str]:
+    """Extend the versioned fallback hierarchy for every selected label."""
+    from src.features.meddra_hierarchy import map_side_effect_to_soc
+
+    manifest = json.loads(manifest_path.read_text())
+    labels_path = Path(manifest["labels_path"])
+    if not labels_path.is_absolute():
+        labels_path = manifest_path.parent / labels_path
+    labels_payload = json.loads(labels_path.read_text())
+    labels = labels_payload.get("labels", labels_payload)
+    hierarchy = json.loads(hierarchy_path.read_text())
+    organ_order = hierarchy["organ_order"]
+    mapped = {str(item["specific_cui"]) for item in hierarchy["mappings"]}
+    added: list[str] = []
+    for label in labels:
+        cui = str(label["cui"])
+        if cui in mapped:
+            continue
+        organ = map_side_effect_to_soc(str(label["name"]))
+        hierarchy["mappings"].append(
+            {"organ_index": organ_order.index(organ), "specific_cui": cui}
+        )
+        mapped.add(cui)
+        added.append(cui)
+    if added:
+        hierarchy["mappings"] = sorted(
+            hierarchy["mappings"], key=lambda item: str(item["specific_cui"])
+        )
+        hierarchy["source"] = "keyword_fallback_v2_manifest_complete"
+        hierarchy_path.write_text(json.dumps(hierarchy, indent=2, sort_keys=True))
+    return added
+
+
 def expected_outputs(stage: str, scenario: str, seed: int, manifest_hash: str) -> list[Path]:
     artifacts = ROOT / "artifacts"
     mapping = {
@@ -159,9 +192,16 @@ def run_one(scenario: str, seed: int, template: Path, drive_root: Path, dry_run:
         print(f"DRY-RUN {scenario}/seed_{seed}: stages={','.join(rendered['stages'])}")
         print(f"  HGT seed argument: {rendered['stages']['hgt'][rendered['stages']['hgt'].index('--seed') + 1]}")
         return
-    _, manifest = _manifest(scenario, seed)
+    manifest_path, manifest = _manifest(scenario, seed)
     backup = drive_root / f"{scenario}_seed_{seed}"
     _restore(backup)
+    hierarchy_path = ROOT / "artifacts" / "meddra_hierarchy.json"
+    added = ensure_manifest_hierarchy(hierarchy_path, manifest_path)
+    if added:
+        print(
+            f"HIERARCHY completed for {scenario}/seed_{seed}: {', '.join(added)}",
+            flush=True,
+        )
     for number, stage in enumerate(STAGES, start=1):
         marker = backup / "markers" / f"{stage}.complete.json"
         if _marker_valid(marker):
