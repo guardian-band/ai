@@ -1,0 +1,96 @@
+stages:
+  hgt:
+    - --primekg
+    - data/processed/colab_primekg_safe.parquet
+    - --morgan
+    - artifacts/morgan_fingerprints.parquet
+    - --manifest
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+    - --checkpoint
+    - artifacts/checkpoints/hgt_{scenario}_seed_{seed}.pt
+    - --output
+    - artifacts/features/hgt_{scenario}_seed_{seed}.npz
+    - --hidden-dim
+    - "128"
+    - --batch-size
+    - "1024"
+    - --num-neighbors
+    - "5"
+    - "3"
+    - "2"
+    - --epochs
+    - "5"
+    - --max-train-edges-per-relation
+    - "5000"
+    - --max-validation-edges-per-relation
+    - "1000"
+    - --seed
+    - "{seed}"
+    - --device
+    - cuda
+
+  assemble:
+    - --manifest
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+    - --morgan
+    - artifacts/morgan_fingerprints.parquet
+    - --molformer
+    - artifacts/features/molformer_tokens.npz
+    - --mpnn
+    - artifacts/features/mpnn_tokens.npz
+    - --kg
+    - artifacts/features/hgt_{scenario}_seed_{seed}.npz
+    - --output
+    - artifacts/features/advanced_{scenario}_seed_{seed}.npz
+
+  teacher_config:
+    - --model
+    - teacher
+    - --template
+    - configs/model_multimodal_teacher.yaml
+    - --manifest
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+    - --features
+    - artifacts/features/advanced_{scenario}_seed_{seed}.npz
+    - --hierarchy
+    - artifacts/meddra_hierarchy.json
+    - --output
+    - artifacts/configs/teacher_{scenario}_seed_{seed}.yaml
+
+  teacher:
+    - --experiment
+    - artifacts/configs/teacher_{scenario}_seed_{seed}.yaml
+    - --benchmark
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+
+  cache:
+    - --experiment
+    - artifacts/configs/teacher_{scenario}_seed_{seed}.yaml
+    - --benchmark
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+    - --output
+    - artifacts/features/teacher_cache_{scenario}_seed_{seed}.npz
+    - --device
+    - cpu
+
+  student_config:
+    - --model
+    - student
+    - --template
+    - configs/model_distilled_pair_student.yaml
+    - --manifest
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
+    - --cache
+    - artifacts/features/teacher_cache_{scenario}_seed_{seed}.npz
+    - --teacher-config
+    - artifacts/configs/teacher_{scenario}_seed_{seed}.yaml
+    - --hierarchy
+    - artifacts/meddra_hierarchy.json
+    - --output
+    - artifacts/configs/student_{scenario}_seed_{seed}.yaml
+
+  student:
+    - --experiment
+    - artifacts/configs/student_{scenario}_seed_{seed}.yaml
+    - --benchmark
+    - artifacts/benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json
