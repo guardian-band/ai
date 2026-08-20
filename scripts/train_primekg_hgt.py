@@ -162,6 +162,27 @@ def _labels(
     )
 
 
+def _bounded_supervision(
+    positives: torch.Tensor,
+    max_edges: int | None,
+    *,
+    seed: int,
+) -> torch.Tensor:
+    """Deterministically cap one relation without dropping the relation itself."""
+
+    if positives.ndim != 2 or positives.shape[0] != 2:
+        raise ValueError("positive edge index must have shape [2, E]")
+    if max_edges is None:
+        return positives
+    if isinstance(max_edges, bool) or not isinstance(max_edges, int) or max_edges <= 0:
+        raise ValueError("max supervision edges must be a positive integer")
+    if positives.shape[1] <= max_edges:
+        return positives
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    selection = torch.randperm(positives.shape[1], generator=generator)[:max_edges]
+    return positives[:, selection].contiguous()
+
+
 def _relation_loss(
     model,
     predictor,
@@ -174,14 +195,27 @@ def _relation_loss(
     batch_size,
     seed,
     device,
+    max_positive_edges=None,
+    phase="train",
     optimizer=None,
 ) -> float:
     from torch_geometric.loader import LinkNeighborLoader
 
     total = 0.0
     count = 0
-    for relation_number, (edge_type, positives) in enumerate(sorted(supervision.items())):
+    relations = sorted(supervision.items())
+    for relation_number, (edge_type, positives) in enumerate(relations):
         source_type, _, destination_type = edge_type
+        positives = _bounded_supervision(
+            positives,
+            max_positive_edges,
+            seed=seed + relation_number,
+        )
+        print(
+            f"{phase} relation={relation_number + 1}/{len(relations)} "
+            f"type={'/'.join(edge_type)} positives={positives.shape[1]}",
+            flush=True,
+        )
         edge_label_index, edge_label = _labels(
             positives,
             all_edges[edge_type],
@@ -276,6 +310,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--num-neighbors", type=int, nargs="+", default=[15, 10, 5])
+    parser.add_argument("--max-train-edges-per-relation", type=int)
+    parser.add_argument("--max-validation-edges-per-relation", type=int)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
@@ -289,6 +325,12 @@ def main() -> None:
         raise RuntimeError("CUDA was requested but is unavailable")
     if args.device == "mps" and not torch.backends.mps.is_available():
         raise RuntimeError("MPS was requested but is unavailable")
+    for value, name in (
+        (args.max_train_edges_per_relation, "max-train-edges-per-relation"),
+        (args.max_validation_edges_per_relation, "max-validation-edges-per-relation"),
+    ):
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
     torch.manual_seed(args.seed)
     manifest_path = args.manifest.resolve()
     manifest = verify_manifest(str(manifest_path))
@@ -343,6 +385,8 @@ def main() -> None:
             batch_size=args.batch_size,
             seed=args.seed + epoch * 101,
             device=args.device,
+            max_positive_edges=args.max_train_edges_per_relation,
+            phase="train",
             optimizer=optimizer,
         )
         model.eval()
@@ -359,6 +403,8 @@ def main() -> None:
                 batch_size=args.batch_size,
                 seed=args.seed + 1_000_003,
                 device=args.device,
+                max_positive_edges=args.max_validation_edges_per_relation,
+                phase="validation",
             )
         print(
             f"epoch={epoch + 1}/{args.epochs} train_loss={train_loss:.6f} "
@@ -388,6 +434,8 @@ def main() -> None:
             "manifest_hash": manifest["manifest_hash"],
             "excluded_cold_drug_count": len(excluded),
             "best_validation_loss": best_loss,
+            "max_train_edges_per_relation": args.max_train_edges_per_relation,
+            "max_validation_edges_per_relation": args.max_validation_edges_per_relation,
             "morgan_sha256": hashlib.sha256(args.morgan.read_bytes()).hexdigest(),
         },
         predictor=predictor,
@@ -424,6 +472,8 @@ def main() -> None:
             "seed": manifest["seed"],
             "manifest_hash": manifest["manifest_hash"],
             "excluded_cold_drug_count": len(excluded),
+            "max_train_edges_per_relation": args.max_train_edges_per_relation,
+            "max_validation_edges_per_relation": args.max_validation_edges_per_relation,
             "cold_protocol": "label_and_encoder_train_inductive_safe_graph_at_export",
         },
         source_sha256=source_hash,
