@@ -61,6 +61,21 @@ def test_summary_validation_and_csv_are_artifact_driven(tmp_path):
     assert "0.512" in text
 
 
+def test_reporting_uses_run_model_id_for_modern_teacher_cohorts():
+    summary = _summary()
+    for cohort in summary["cohorts"]:
+        cohort["run_model_id"] = "multimodal_teacher_full"
+        cohort["model_type"] = "multimodal_teacher"
+    summary["champion"] = {
+        "model_type": "multimodal_teacher",
+        "run_model_id": "multimodal_teacher_full",
+        "mean_macro_ap": 0.522,
+        "mean_micro_ap": 0.633,
+    }
+    canonical = canonicalize_aggregation_summary(summary)
+    assert all(cohort["model_type"] == "multimodal_teacher_full" for cohort in canonical["cohorts"])
+
+
 @pytest.mark.parametrize(
     "mutator, message",
     [

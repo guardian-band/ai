@@ -86,6 +86,10 @@ stages:
       - artifacts/benchmarks/polypharmacy_v1/cold_1/seed_42/manifest.json
       - --output
       - artifacts/features/teacher_cache_cold_1_seed_42.npz
+      - --selection
+      - artifacts/runs/multimodal_teacher_full__cold_1__seed_42__REPLACE_WITH_MANIFEST_HASH/teacher_validation_selection.json
+      - --selection-sha256
+      - REPLACE_WITH_TEACHER_SELECTION_SHA256
 
   student_config:
     - - --model

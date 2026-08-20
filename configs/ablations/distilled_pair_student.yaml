@@ -1,8 +1,5 @@
-# CPU deployment configuration. The token artifact is produced offline by a
-# trained teacher and must be supplied with its checksum before deployment.
 model_type: distilled_pair_student
 inference_input_mode: cached_latent_tokens
-
 token_dim: 128
 token_count: 8
 hidden_dim: 256
@@ -22,8 +19,6 @@ distillation_weight: 1.0
 distillation_weight_candidates: [0.0, 0.25, 0.5, 1.0]
 distillation_temperature_candidates: [1.0, 2.0, 4.0]
 student_max_validation_ap_drop: 0.005
-
-# Deliberately null until the teacher/distillation pipeline has emitted it.
 cached_token_artifact_path: null
 cached_token_artifact_sha256: null
 teacher_config_path: null

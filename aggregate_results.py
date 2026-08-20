@@ -6,19 +6,26 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
 import yaml
 
 from src.evaluation.metrics import compute_all_metrics
+from src.models.factory import derive_run_model_id
 from src.training.engine import REQUIRED_RUN_ARTIFACTS
 
 
 SCALAR_METRICS = (
     "micro_ap", "micro_auroc", "brier_score", "ece_15", "precision_at_k",
     "recall_at_k", "ndcg_at_k", "macro_ap", "macro_auroc",
+)
+TEACHER_ABLATION_RUN_MODEL_IDS = (
+    "multimodal_teacher_morgan_molformer",
+    "multimodal_teacher_morgan_mpnn",
+    "multimodal_teacher_morgan_hgt",
+    "multimodal_teacher_full",
 )
 
 
@@ -56,6 +63,19 @@ def _verify_completion(run_dir: Path) -> dict[str, Any]:
         expected = declared.get(artifact_name)
         if not isinstance(expected, dict):
             raise ValueError(f"run {run_dir.name} has no hash for {artifact_name}")
+        actual = _artifact_digest(path)
+        if expected.get("sha256") != actual["sha256"] or int(expected.get("bytes", -1)) != actual["bytes"]:
+            raise ValueError(f"run {run_dir.name} artifact hash/size mismatch for {artifact_name}")
+    # A model-specific runner may add provenance artifacts (for example the
+    # Teacher validation-selection record). Validate every declared artifact,
+    # not only the legacy required set, so tampering cannot be hidden behind a
+    # valid core completion marker.
+    for artifact_name, expected in declared.items():
+        path = run_dir / artifact_name
+        if not path.exists():
+            raise ValueError(f"run {run_dir.name} is missing declared artifact {artifact_name}")
+        if not isinstance(expected, dict):
+            raise ValueError(f"run {run_dir.name} has invalid hash for {artifact_name}")
         actual = _artifact_digest(path)
         if expected.get("sha256") != actual["sha256"] or int(expected.get("bytes", -1)) != actual["bytes"]:
             raise ValueError(f"run {run_dir.name} artifact hash/size mismatch for {artifact_name}")
@@ -110,10 +130,24 @@ def _verify_run(run_dir: Path) -> dict[str, Any]:
         if key not in config:
             raise ValueError(f"run {run_dir.name} config missing {key}")
     model_type = str(config["model_type"])
-    if run_dir.name.split("__", 1)[0] != model_type:
-        raise ValueError(f"run {run_dir.name} model_type prefix does not match config")
+    derived_run_model_id = derive_run_model_id(config)
+    declared_run_model_id = config.get("run_model_id")
+    if declared_run_model_id is not None:
+        if declared_run_model_id != derived_run_model_id:
+            raise ValueError(
+                f"run {run_dir.name} run_model_id is not derived from model configuration"
+            )
+        run_model_id = str(declared_run_model_id)
+    else:
+        # Legacy artifacts predate run_model_id and intentionally retain their
+        # model_type identity rather than being silently relabeled.
+        run_model_id = model_type
+    if run_dir.name.split("__", 1)[0] != run_model_id:
+        raise ValueError(
+            f"run {run_dir.name} model_type prefix/run_model_id prefix does not match config"
+        )
     expected_prefix = (
-        f"{model_type}__{config['scenario']}__seed_{int(config['seed'])}__{config['manifest_hash']}"
+        f"{run_model_id}__{config['scenario']}__seed_{int(config['seed'])}__{config['manifest_hash']}"
     )
     if not run_dir.name.startswith(expected_prefix):
         raise ValueError(f"run {run_dir.name} config/run identity mismatch")
@@ -141,7 +175,12 @@ def _verify_run(run_dir: Path) -> dict[str, Any]:
             raise ValueError(f"run {run_dir.name} metrics mismatch for {key}")
         if abs(float(value) - float(stored_value)) > 1e-10:
             raise ValueError(f"run {run_dir.name} metrics mismatch for {key}")
-    return {"run_id": run_dir.name, "config": config, "metrics": recomputed}
+    return {
+        "run_id": run_dir.name,
+        "run_model_id": run_model_id,
+        "config": config,
+        "metrics": recomputed,
+    }
 
 
 def _bootstrap_interval(values: list[float], *, resamples: int, seed: int, confidence: float) -> tuple[float, float]:
@@ -177,11 +216,122 @@ def _cohort_summary(records: list[dict[str, Any]], bootstrap: dict[str, Any]) ->
         }
     return {
         "model_type": config["model_type"],
+        "run_model_id": records[0]["run_model_id"],
         "benchmark_id": config["benchmark_id"],
         "scenario": config["scenario"],
         "seeds": [int(record["config"]["seed"]) for record in records],
         "run_ids": [record["run_id"] for record in records],
         "metrics": metric_summary,
+    }
+
+
+def _ordered_label_hash(config: Mapping[str, Any]) -> str:
+    """Read the ordered-label provenance hash from modern or transitional configs."""
+
+    source_hashes = config.get("source_hashes")
+    candidates = (
+        config.get("labels_order_sha256"),
+        config.get("label_order_sha256"),
+        config.get("label_order_hash"),
+        source_hashes.get("labels_order") if isinstance(source_hashes, dict) else None,
+    )
+    for value in candidates:
+        if isinstance(value, str) and value:
+            return value
+    raise ValueError("paired comparison requires ordered label hash provenance")
+
+
+def _delta_summary(
+    values: list[float], *, bootstrap: Mapping[str, Any], seed_offset: int
+) -> dict[str, Any]:
+    numeric = np.asarray(values, dtype=float)
+    if numeric.size == 0 or not np.isfinite(numeric).all():
+        raise ValueError("paired comparison deltas must be finite")
+    lower, upper = _bootstrap_interval(
+        values,
+        resamples=int(bootstrap.get("resamples", 2000)),
+        seed=int(bootstrap.get("seed", 8675309)) + seed_offset,
+        confidence=float(bootstrap.get("confidence_level", 0.95)),
+    )
+    return {
+        "per_seed": [float(value) for value in values],
+        "mean": float(np.mean(numeric)),
+        "std": float(np.std(numeric, ddof=1)) if numeric.size > 1 else None,
+        "lower_ci": lower,
+        "upper_ci": upper,
+    }
+
+
+def _paired_ablation_comparison(
+    records: list[dict[str, Any]],
+    bootstrap: Mapping[str, Any],
+    *,
+    advanced_model_id: str = "multimodal_teacher_full",
+) -> dict[str, Any]:
+    """Compare one auxiliary Teacher ablation against Morgan-only."""
+
+    baseline_id = "multimodal_teacher_morgan_only"
+    advanced_id = advanced_model_id
+    by_model: dict[str, dict[tuple[str, int], dict[str, Any]]] = {
+        baseline_id: {},
+        advanced_id: {},
+    }
+    for record in records:
+        run_model_id = record.get("run_model_id")
+        if run_model_id not in by_model:
+            continue
+        config = record["config"]
+        key = (str(config["scenario"]), int(config["seed"]))
+        if key in by_model[run_model_id]:
+            raise ValueError(f"duplicate paired comparison run for {run_model_id} {key}")
+        by_model[run_model_id][key] = record
+    if not by_model[baseline_id] or not by_model[advanced_id]:
+        raise ValueError(
+            f"paired comparison requires Morgan-only and {advanced_id} Teacher runs"
+        )
+    if set(by_model[baseline_id]) != set(by_model[advanced_id]):
+        raise ValueError("paired comparison scenario/seed sets differ")
+    paired_bootstrap = dict(bootstrap)
+    paired_bootstrap["confidence_level"] = 0.95
+
+    pairs: list[dict[str, Any]] = []
+    for key in sorted(by_model[baseline_id]):
+        baseline = by_model[baseline_id][key]
+        advanced = by_model[advanced_id][key]
+        baseline_config = baseline["config"]
+        advanced_config = advanced["config"]
+        if baseline_config.get("manifest_hash") != advanced_config.get("manifest_hash"):
+            raise ValueError("paired comparison manifest hash mismatch")
+        if _ordered_label_hash(baseline_config) != _ordered_label_hash(advanced_config):
+            raise ValueError("paired comparison ordered label hash mismatch")
+        baseline_macro = float(baseline["metrics"]["macro_ap"])
+        advanced_macro = float(advanced["metrics"]["macro_ap"])
+        baseline_micro = float(baseline["metrics"]["micro_ap"])
+        advanced_micro = float(advanced["metrics"]["micro_ap"])
+        pairs.append(
+            {
+                "scenario": key[0],
+                "seed": key[1],
+                "morgan_macro_ap": baseline_macro,
+                "advanced_macro_ap": advanced_macro,
+                "delta_macro_ap": advanced_macro - baseline_macro,
+                "morgan_micro_ap": baseline_micro,
+                "advanced_micro_ap": advanced_micro,
+                "delta_micro_ap": advanced_micro - baseline_micro,
+            }
+        )
+    macro = _delta_summary(
+        [pair["delta_macro_ap"] for pair in pairs], bootstrap=paired_bootstrap, seed_offset=0
+    )
+    micro = _delta_summary(
+        [pair["delta_micro_ap"] for pair in pairs], bootstrap=paired_bootstrap, seed_offset=1
+    )
+    return {
+        "baseline_run_model_id": baseline_id,
+        "advanced_run_model_id": advanced_id,
+        "pairs": pairs,
+        "metrics": {"macro_ap": macro, "micro_ap": micro},
+        "improved": bool(macro["lower_ci"] is not None and macro["lower_ci"] > 0.0),
     }
 
 
@@ -214,7 +364,11 @@ def aggregate_runs(runs_dir: str, output_file: str, benchmark_config: str | None
             raise ValueError(f"unexpected benchmark_id {config['benchmark_id']}")
         if config["scenario"] not in expected_scenarios or int(config["seed"]) not in expected_seeds:
             raise ValueError(f"unexpected scenario or seed in run {record['run_id']}")
-        key = (str(config["model_type"]), str(config["benchmark_id"]), str(config["scenario"]))
+        key = (
+            str(record["run_model_id"]),
+            str(config["benchmark_id"]),
+            str(config["scenario"]),
+        )
         cohort = cohorts.setdefault(key, [])
         if any(int(item["config"]["seed"]) == int(config["seed"]) for item in cohort):
             raise ValueError(f"duplicate run for {key} seed {config['seed']}")
@@ -231,8 +385,8 @@ def aggregate_runs(runs_dir: str, output_file: str, benchmark_config: str | None
     # A model/benchmark is only comparable when it has every required
     # scenario.  Do not silently emit a partial warm-only summary.
     model_benchmarks: dict[tuple[str, str], set[str]] = {}
-    for model_type, benchmark_id, scenario in cohorts:
-        model_benchmarks.setdefault((model_type, benchmark_id), set()).add(scenario)
+    for run_model_id, benchmark_id, scenario in cohorts:
+        model_benchmarks.setdefault((run_model_id, benchmark_id), set()).add(scenario)
     for model_benchmark, scenarios in model_benchmarks.items():
         missing_scenarios = set(expected_scenarios) - scenarios
         if missing_scenarios:
@@ -247,7 +401,7 @@ def aggregate_runs(runs_dir: str, output_file: str, benchmark_config: str | None
     by_model: dict[str, list[dict[str, Any]]] = {}
     for summary in summaries:
         if summary["metrics"]["macro_ap"]["mean"] is not None:
-            by_model.setdefault(summary["model_type"], []).append(summary)
+            by_model.setdefault(summary["run_model_id"], []).append(summary)
     if not by_model:
         raise ValueError("no finite macro_ap values available for champion selection")
 
@@ -269,15 +423,29 @@ def aggregate_runs(runs_dir: str, output_file: str, benchmark_config: str | None
     champion_macro, champion_micro = model_scores[champion_model]
     champion = {
         "model_type": champion_model,
+        "run_model_id": champion_model,
         "mean_macro_ap": champion_macro,
         "mean_micro_ap": None if not np.isfinite(champion_micro) else champion_micro,
     }
+    paired_comparisons = []
+    available_run_model_ids = {record["run_model_id"] for record in records}
+    for advanced_model_id in TEACHER_ABLATION_RUN_MODEL_IDS:
+        if {
+            "multimodal_teacher_morgan_only",
+            advanced_model_id,
+        }.issubset(available_run_model_ids):
+            paired_comparisons.append(
+                _paired_ablation_comparison(
+                    records, bootstrap, advanced_model_id=advanced_model_id
+                )
+            )
     output = {
         "schema_version": 1,
         "benchmark_config": str(config_path),
         "expected_seeds": expected_seeds,
         "expected_scenarios": expected_scenarios,
         "cohorts": summaries,
+        "paired_ablation_comparisons": paired_comparisons,
         "champion_rule": "highest mean macro_ap averaged across required scenarios, then higher mean micro_ap, then lexicographically smaller model_type",
         "champion": champion,
     }
@@ -286,7 +454,10 @@ def aggregate_runs(runs_dir: str, output_file: str, benchmark_config: str | None
     output_path.write_text(json.dumps(_json_safe(output), indent=2, allow_nan=False))
     rows = []
     for summary in summaries:
-        row = {key: summary[key] for key in ("model_type", "benchmark_id", "scenario")}
+        row = {
+            key: summary[key]
+            for key in ("model_type", "run_model_id", "benchmark_id", "scenario")
+        }
         row["seeds"] = ",".join(str(seed) for seed in summary["seeds"])
         row["run_ids"] = ",".join(summary["run_ids"])
         for metric, values in summary["metrics"].items():

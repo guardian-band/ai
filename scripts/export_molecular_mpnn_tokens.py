@@ -41,8 +41,14 @@ def main() -> None:
         raise ValueError(f"drug input is missing columns: {', '.join(missing)}")
     if frame[args.drug_id_column].astype(str).duplicated().any():
         raise ValueError("drug input contains duplicate drug IDs")
-    model, _ = load_mpnn_checkpoint(
+    model, checkpoint_metadata = load_mpnn_checkpoint(
         args.checkpoint, expected_sha256=args.checkpoint_sha256
+    )
+    training_config = checkpoint_metadata.get("training_config", {})
+    upstream_validation_loss = (
+        training_config.get("best_validation_loss")
+        if isinstance(training_config, dict)
+        else None
     )
     checkpoint_sha256 = hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
     artifact = export_mpnn_token_artifact(
@@ -54,6 +60,7 @@ def main() -> None:
         checkpoint_sha256=checkpoint_sha256,
         batch_size=args.batch_size,
         device=args.device,
+        upstream_validation_loss=upstream_validation_loss,
     )
     print(f"Wrote {len(artifact.drug_ids)} MPNN rows to {args.output}")
 

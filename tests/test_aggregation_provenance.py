@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 import yaml
 
-from aggregate_results import _verify_run, aggregate_runs
+from aggregate_ablations import aggregate_ablations
+from aggregate_results import _paired_ablation_comparison, _verify_run, aggregate_runs
 from src.evaluation.metrics import compute_all_metrics
 
 
@@ -91,6 +92,35 @@ def _write_fixture_run(
     return run_dir
 
 
+def _write_ablation_run(runs_dir: Path, *, run_model_id: str, scenario: str, seed: int, label_hash: str = "l1") -> Path:
+    run_dir = _write_fixture_run(
+        runs_dir,
+        model_type=run_model_id,
+        scenario=scenario,
+        seed=seed,
+    )
+    config = json.loads((run_dir / "config.resolved.json").read_text())
+    config.update(
+        {
+            "model_type": "multimodal_teacher",
+            "run_model_id": run_model_id,
+            "enabled_modalities": {
+                "multimodal_teacher_morgan_only": [],
+                "multimodal_teacher_morgan_molformer": ["molformer"],
+                "multimodal_teacher_morgan_mpnn": ["mpnn"],
+                "multimodal_teacher_morgan_hgt": ["kg"],
+                "multimodal_teacher_full": ["molformer", "mpnn", "kg"],
+            }[run_model_id],
+            "labels_order_sha256": label_hash,
+        }
+    )
+    (run_dir / "config.resolved.json").write_text(json.dumps(config))
+    marker = json.loads((run_dir / "completion.json").read_text())
+    marker["required_artifacts"]["config.resolved.json"] = _sha256(run_dir / "config.resolved.json")
+    (run_dir / "completion.json").write_text(json.dumps(marker))
+    return run_dir
+
+
 @pytest.fixture
 def benchmark_fixture(tmp_path):
     config_path = tmp_path / "benchmark.yaml"
@@ -151,6 +181,40 @@ def test_run_identity_requires_model_type_prefix(benchmark_fixture, tmp_path):
     (run / "completion.json").write_text(json.dumps(marker))
     with pytest.raises(ValueError, match="model_type prefix"):
         _verify_run(run)
+
+
+def test_spoofed_run_model_id_is_rejected(benchmark_fixture):
+    runs_dir, _ = benchmark_fixture
+    run = next(runs_dir.glob("logistic__warm_pair__seed_1__*"))
+    config = json.loads((run / "config.resolved.json").read_text())
+    config["run_model_id"] = "spoofed_model"
+    (run / "config.resolved.json").write_text(json.dumps(config))
+    marker = json.loads((run / "completion.json").read_text())
+    marker["required_artifacts"]["config.resolved.json"] = _sha256(run / "config.resolved.json")
+    (run / "completion.json").write_text(json.dumps(marker))
+    with pytest.raises(ValueError, match="derived"):
+        _verify_run(run)
+
+
+def test_modern_teacher_run_identity_uses_derived_run_model_id(benchmark_fixture, tmp_path):
+    runs_dir, _ = benchmark_fixture
+    source = next(runs_dir.glob("logistic__warm_pair__seed_1__*"))
+    run = runs_dir / "multimodal_teacher_morgan_only__warm_pair__seed_1__manifest123"
+    source.rename(run)
+    config = json.loads((run / "config.resolved.json").read_text())
+    config.update(
+        {
+            "run_id": run.name,
+            "model_type": "multimodal_teacher",
+            "run_model_id": "multimodal_teacher_morgan_only",
+            "enabled_modalities": [],
+        }
+    )
+    (run / "config.resolved.json").write_text(json.dumps(config))
+    marker = json.loads((run / "completion.json").read_text())
+    marker["required_artifacts"]["config.resolved.json"] = _sha256(run / "config.resolved.json")
+    (run / "completion.json").write_text(json.dumps(marker))
+    assert _verify_run(run)["run_model_id"] == "multimodal_teacher_morgan_only"
 
 
 def test_status_tamper_and_metric_mismatch_are_rejected(benchmark_fixture, tmp_path):
@@ -222,3 +286,182 @@ def test_cli_output_paths(benchmark_fixture, tmp_path, monkeypatch):
     subprocess.run([".venv/bin/python", "aggregate_results.py", "--runs", str(runs_dir), "--output", str(output), "--benchmark-config", str(config_path)], check=True)
     assert output.exists()
     assert output.with_suffix(".csv").exists()
+
+
+def test_staged_ablation_aggregation_supports_one_seed_42(tmp_path):
+    runs_dir = tmp_path / "runs"
+    for run_model_id in ("multimodal_teacher_morgan_only", "multimodal_teacher_full"):
+        _write_ablation_run(runs_dir, run_model_id=run_model_id, scenario="warm_pair", seed=42)
+
+    output = tmp_path / "warm_seed_42.json"
+    result = aggregate_ablations(
+        str(runs_dir), str(output), scenario="warm_pair", expected_seeds=[42]
+    )
+
+    assert output.exists() and output.with_suffix(".csv").exists()
+    assert result["expected_seeds"] == [42]
+    assert result["comparisons"][0]["metrics"]["macro_ap"]["std"] is None
+    assert len(result["comparisons"][0]["pairs"]) == 1
+
+
+def test_staged_ablation_aggregation_supports_five_seed_warm_pair_and_discovers_variants(tmp_path):
+    runs_dir = tmp_path / "runs"
+    variants = (
+        "multimodal_teacher_morgan_molformer",
+        "multimodal_teacher_morgan_mpnn",
+        "multimodal_teacher_morgan_hgt",
+        "multimodal_teacher_full",
+    )
+    for seed in range(42, 47):
+        _write_ablation_run(
+            runs_dir,
+            run_model_id="multimodal_teacher_morgan_only",
+            scenario="warm_pair",
+            seed=seed,
+        )
+        for variant in variants:
+            _write_ablation_run(runs_dir, run_model_id=variant, scenario="warm_pair", seed=seed)
+
+    result = aggregate_ablations(
+        str(runs_dir), str(tmp_path / "warm_five.json"), scenario="warm_pair", expected_seeds=range(42, 47)
+    )
+
+    assert result["expected_seeds"] == [42, 43, 44, 45, 46]
+    assert result["variants"] == list(variants)
+    assert all(len(comparison["pairs"]) == 5 for comparison in result["comparisons"])
+    csv_text = (tmp_path / "warm_five.csv").read_text()
+    assert "per_seed" in csv_text and "summary" in csv_text
+
+
+@pytest.mark.parametrize(
+    "setup, message",
+    [
+        ("absent_baseline", "Morgan-only"),
+        ("missing_seed", "seed"),
+        ("cold_mixed", "scenario"),
+        ("empty_variants", "variant"),
+    ],
+)
+def test_staged_ablation_aggregation_rejects_invalid_stage_inputs(tmp_path, setup, message):
+    runs_dir = tmp_path / "runs"
+    if setup != "absent_baseline":
+        _write_ablation_run(
+            runs_dir,
+            run_model_id="multimodal_teacher_morgan_only",
+            scenario="warm_pair",
+            seed=42,
+        )
+    if setup != "empty_variants":
+        _write_ablation_run(
+            runs_dir,
+            run_model_id="multimodal_teacher_full",
+            scenario="cold_1" if setup == "cold_mixed" else "warm_pair",
+            seed=42,
+        )
+    if setup == "missing_seed":
+        _write_ablation_run(
+            runs_dir,
+            run_model_id="multimodal_teacher_morgan_only",
+            scenario="warm_pair",
+            seed=43,
+        )
+    with pytest.raises(ValueError, match=message):
+        aggregate_ablations(
+            str(runs_dir),
+            str(tmp_path / "invalid.json"),
+            scenario="warm_pair",
+            expected_seeds=[42],
+            variants=[] if setup == "empty_variants" else ["multimodal_teacher_full"],
+        )
+
+
+def test_staged_ablation_aggregation_rejects_duplicate_pair_seed(tmp_path):
+    runs_dir = tmp_path / "runs"
+    baseline = _write_ablation_run(
+        runs_dir,
+        run_model_id="multimodal_teacher_morgan_only",
+        scenario="warm_pair",
+        seed=42,
+    )
+    _write_ablation_run(
+        runs_dir,
+        run_model_id="multimodal_teacher_full",
+        scenario="warm_pair",
+        seed=42,
+    )
+    duplicate = runs_dir / "multimodal_teacher_morgan_only__warm_pair__seed_42__manifest123_duplicate"
+    duplicate.mkdir()
+    for path in baseline.iterdir():
+        if path.is_file():
+            duplicate.joinpath(path.name).write_bytes(path.read_bytes())
+    config = json.loads((duplicate / "config.resolved.json").read_text())
+    config["run_id"] = duplicate.name
+    (duplicate / "config.resolved.json").write_text(json.dumps(config))
+    marker = json.loads((duplicate / "completion.json").read_text())
+    marker["required_artifacts"]["config.resolved.json"] = _sha256(duplicate / "config.resolved.json")
+    (duplicate / "completion.json").write_text(json.dumps(marker))
+    with pytest.raises(ValueError, match="duplicate"):
+        aggregate_ablations(
+            str(runs_dir),
+            str(tmp_path / "duplicate.json"),
+            scenario="warm_pair",
+            expected_seeds=[42],
+            variants=["multimodal_teacher_full"],
+        )
+
+
+def _paired_record(run_model_id, scenario, seed, macro_ap, micro_ap, *, manifest_hash="m1", label_hash="l1"):
+    return {
+        "run_id": f"{run_model_id}__{scenario}__seed_{seed}__{manifest_hash}",
+        "run_model_id": run_model_id,
+        "config": {
+            "model_type": "multimodal_teacher",
+            "run_model_id": run_model_id,
+            "scenario": scenario,
+            "seed": seed,
+            "manifest_hash": manifest_hash,
+            "labels_order_sha256": label_hash,
+        },
+        "metrics": {"macro_ap": macro_ap, "micro_ap": micro_ap},
+    }
+
+
+def test_paired_ablation_comparison_is_deterministic_and_reports_deltas():
+    records = []
+    for seed, (morgan_macro, full_macro) in enumerate(((0.40, 0.50), (0.45, 0.55)), start=1):
+        records.extend(
+            [
+                _paired_record("multimodal_teacher_morgan_only", "warm_pair", seed, morgan_macro, 0.60),
+                _paired_record("multimodal_teacher_full", "warm_pair", seed, full_macro, 0.70),
+            ]
+        )
+    comparison = _paired_ablation_comparison(records, {"resamples": 100, "seed": 7, "confidence_level": 0.95})
+    assert comparison["pairs"][0]["delta_macro_ap"] == pytest.approx(0.10)
+    assert comparison["metrics"]["macro_ap"]["mean"] == pytest.approx(0.10)
+    assert comparison["metrics"]["macro_ap"]["std"] == pytest.approx(0.0)
+    assert comparison["metrics"]["macro_ap"]["lower_ci"] == pytest.approx(0.10)
+    assert comparison["metrics"]["macro_ap"]["upper_ci"] == pytest.approx(0.10)
+    assert comparison["improved"] is True
+
+
+def test_paired_ablation_rejects_manifest_or_ordered_label_hash_mismatch():
+    records = [
+        _paired_record("multimodal_teacher_morgan_only", "warm_pair", 1, 0.4, 0.5),
+        _paired_record("multimodal_teacher_full", "warm_pair", 1, 0.5, 0.6, label_hash="different"),
+    ]
+    with pytest.raises(ValueError, match="label|hash"):
+        _paired_ablation_comparison(records, {})
+
+
+def test_paired_ablation_does_not_call_improvement_when_macro_ci_crosses_zero():
+    records = []
+    for seed, (morgan_macro, full_macro) in enumerate(((0.50, 0.49), (0.49, 0.50)), start=1):
+        records.extend(
+            [
+                _paired_record("multimodal_teacher_morgan_only", "warm_pair", seed, morgan_macro, 0.60),
+                _paired_record("multimodal_teacher_full", "warm_pair", seed, full_macro, 0.70),
+            ]
+        )
+    comparison = _paired_ablation_comparison(records, {"resamples": 100, "seed": 7})
+    assert comparison["improved"] is False
+    assert comparison["metrics"]["macro_ap"]["lower_ci"] <= 0.0

@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drug-id-column", default="drugbank_id")
     parser.add_argument("--smiles-column", default="smiles")
     parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--output-token-count", type=int, default=8)
+    parser.add_argument("--output-token-count", type=int)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--local-files-only", action="store_true")

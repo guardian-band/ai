@@ -11,6 +11,7 @@ from src.models.multimodal_teacher_student import DistilledPairStudent
 
 TEACHER_HASH = "a" * 64
 MODALITY_HASH = "b" * 64
+SELECTION_HASH = "c" * 64
 
 
 def test_cpu_predictor_applies_temperatures_once_and_orders_ties(tmp_path):
@@ -24,6 +25,8 @@ def test_cpu_predictor_applies_temperatures_once_and_orders_ties(tmp_path):
         np.ones((2, 3), dtype=bool),
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     predictor = CPUPairPredictor(
         student,
@@ -61,6 +64,8 @@ def test_cpu_predictor_requires_eval_cpu_and_has_no_graph_runtime_imports(tmp_pa
         np.ones((2, 3), dtype=bool),
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     with pytest.raises(ValueError, match="eval"):
         CPUPairPredictor(student, path, label_names=["s0", "s1", "s2"])
@@ -81,6 +86,8 @@ def test_cpu_predictor_breaks_probability_ties_by_label_index(tmp_path):
         np.ones((2, 3), dtype=bool),
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     predictor = CPUPairPredictor(student, path, label_names=["s0", "s1", "s2"], top_k=2)
     result = predictor.predict_pair("a", "b")
@@ -100,6 +107,8 @@ def test_cpu_predictor_loads_repository_calibration_threshold_artifacts(tmp_path
         np.ones((2, 3), dtype=bool),
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     calibration_path = tmp_path / "calibration.json"
     calibration_path.write_text(json.dumps({"temperatures": {"specific": 2.0}}))
@@ -129,6 +138,8 @@ def test_cpu_predictor_rejects_misaligned_threshold_artifact(tmp_path):
         np.ones((2, 3), dtype=bool),
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     calibration_path = tmp_path / "calibration.json"
     calibration_path.write_text(json.dumps({"temperatures": {"specific": 1.0}}))

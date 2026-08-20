@@ -27,7 +27,7 @@ class MolFormerTokenProducer:
         model_id: str,
         revision: str,
         max_length: int = 128,
-        output_token_count: int = 8,
+        output_token_count: int | None = None,
         device: str | torch.device = "cpu",
     ) -> None:
         if not isinstance(model_id, str) or not model_id.strip():
@@ -36,12 +36,16 @@ class MolFormerTokenProducer:
             raise ValueError("revision must be a pinned 40-character lowercase commit hash")
         if isinstance(max_length, bool) or not isinstance(max_length, int) or max_length <= 0:
             raise ValueError("max_length must be a positive integer")
-        if (
+        if output_token_count is None:
+            output_token_count = max_length
+        elif (
             isinstance(output_token_count, bool)
             or not isinstance(output_token_count, int)
             or output_token_count <= 0
         ):
             raise ValueError("output_token_count must be a positive integer")
+        if output_token_count != max_length:
+            raise ValueError("output_token_count must match max_length")
         self.tokenizer = tokenizer
         self.model = model.eval()
         self.model_id = model_id
@@ -59,7 +63,7 @@ class MolFormerTokenProducer:
         allow_remote_code: bool,
         model_id: str = DEFAULT_MODEL_ID,
         max_length: int = 128,
-        output_token_count: int = 8,
+        output_token_count: int | None = None,
         device: str | torch.device = "cpu",
         local_files_only: bool = False,
     ) -> "MolFormerTokenProducer":
@@ -120,24 +124,13 @@ class MolFormerTokenProducer:
         if tokens.ndim != 3 or tokens.shape[:2] != padding_mask.shape:
             raise RuntimeError("MolFormer emitted an invalid token tensor shape")
         tokens = tokens.masked_fill(padding_mask.unsqueeze(-1), 0.0)
-        pooled = tokens.new_zeros(
-            (tokens.shape[0], self.output_token_count, tokens.shape[2])
-        )
-        pooled_mask = torch.ones(
-            (tokens.shape[0], self.output_token_count), dtype=torch.bool
-        )
-        for batch_index in range(tokens.shape[0]):
-            valid_tokens = tokens[batch_index, ~padding_mask[batch_index]]
-            count = valid_tokens.shape[0]
-            for token_index in range(self.output_token_count):
-                start = token_index * count // self.output_token_count
-                stop = (token_index + 1) * count // self.output_token_count
-                if stop > start:
-                    pooled[batch_index, token_index] = valid_tokens[start:stop].mean(dim=0)
-                    pooled_mask[batch_index, token_index] = False
-        if not torch.isfinite(pooled).all():
+        if tokens.shape[1] != self.max_length:
+            raise RuntimeError(
+                "MolFormer hidden-state token count does not match configured max_length"
+            )
+        if not torch.isfinite(tokens).all():
             raise RuntimeError("MolFormer emitted non-finite token values")
-        return pooled.numpy(), pooled_mask.numpy()
+        return tokens.numpy(), padding_mask.numpy()
 
 
 def export_molformer_token_artifact(
@@ -204,6 +197,10 @@ def export_molformer_token_artifact(
             "revision": producer.revision,
             "max_length": producer.max_length,
             "output_token_count": producer.output_token_count,
+            "token_count": producer.max_length,
+            "contextual_hidden_states": True,
+            "padding_mask_source": "tokenizer_attention_mask",
+            "source_sha256": source_sha256,
         },
         source_sha256=source_sha256,
     )

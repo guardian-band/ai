@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -242,3 +243,82 @@ class CPUPairPredictor:
             return value
 
         return convert(result)
+
+    def benchmark_pair(
+        self,
+        drug_a: str,
+        drug_b: str,
+        *,
+        warmups: int,
+        iterations: int,
+        threads: int,
+    ) -> dict[str, Any]:
+        """Measure the existing single-pair path on CPU.
+
+        The caller owns the production policy for minimum warmups and
+        iterations.  This method deliberately accepts small positive counts so
+        tests and local diagnostics can exercise the exact deployment path
+        without running a full benchmark.
+        """
+
+        for name, value in (("warmups", warmups), ("iterations", iterations), ("threads", threads)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        previous_threads = torch.get_num_threads()
+        torch.set_num_threads(threads)
+        try:
+            for _ in range(warmups):
+                self.predict_pair_json(drug_a, drug_b)
+            elapsed_ms: list[float] = []
+            for _ in range(iterations):
+                started = time.perf_counter_ns()
+                self.predict_pair_json(drug_a, drug_b)
+                elapsed_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
+        finally:
+            torch.set_num_threads(previous_threads)
+        values = np.asarray(elapsed_ms, dtype=np.float64)
+        statistics = {
+            "median": float(np.percentile(values, 50)),
+            "p95": float(np.percentile(values, 95)),
+            "p99": float(np.percentile(values, 99)),
+        }
+        if not all(np.isfinite(value) for value in statistics.values()):
+            raise ValueError("benchmark timing statistics must be finite")
+        return {
+            "timing_ms": statistics,
+            "warmups": int(warmups),
+            "iterations": int(iterations),
+            "threads": int(threads),
+        }
+
+
+def verify_prediction_parity(left: Mapping[str, Any], right: Mapping[str, Any]) -> None:
+    """Fail unless two independently loaded predictions are identical."""
+
+    if set(left) != set(right):
+        raise ValueError("prediction parity check failed: result fields differ")
+
+    def compare(first: Any, second: Any, path: str) -> None:
+        if isinstance(first, Mapping) and isinstance(second, Mapping):
+            if set(first) != set(second):
+                raise ValueError(f"prediction parity check failed at {path}")
+            for key in first:
+                compare(first[key], second[key], f"{path}.{key}")
+            return
+        if isinstance(first, (list, tuple)) and isinstance(second, (list, tuple)):
+            if len(first) != len(second):
+                raise ValueError(f"prediction parity check failed at {path}")
+            for index, (one, two) in enumerate(zip(first, second)):
+                compare(one, two, f"{path}[{index}]")
+            return
+        if isinstance(first, (float, int, bool)) and isinstance(second, (float, int, bool)):
+            if isinstance(first, float) or isinstance(second, float):
+                if not np.isfinite(first) or not np.isfinite(second) or first != second:
+                    raise ValueError(f"prediction parity check failed at {path}")
+            elif first != second:
+                raise ValueError(f"prediction parity check failed at {path}")
+            return
+        if first != second:
+            raise ValueError(f"prediction parity check failed at {path}")
+
+    compare(left, right, "prediction")

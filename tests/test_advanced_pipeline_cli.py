@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
         "build_advanced_features.py",
         "configure_advanced_experiment.py",
         "build_teacher_cache.py",
+        "aggregate_ablations.py",
         "run_advanced_pipeline.py",
     ],
 )

@@ -86,7 +86,13 @@ def canonicalize_aggregation_summary(payload: Mapping[str, Any]) -> dict[str, An
     for index, raw_cohort in enumerate(raw_cohorts):
         if not isinstance(raw_cohort, Mapping):
             raise ReportingValidationError(f"cohort {index} must be an object")
-        model_type = _required_string(raw_cohort.get("model_type"), f"cohort {index} model_type")
+        declared_model_type = _required_string(
+            raw_cohort.get("model_type"), f"cohort {index} model_type"
+        )
+        model_type = _required_string(
+            raw_cohort.get("run_model_id", declared_model_type),
+            f"cohort {index} run_model_id",
+        )
         benchmark_id = _required_string(raw_cohort.get("benchmark_id"), f"cohort {index} benchmark_id")
         scenario = _required_string(raw_cohort.get("scenario"), f"cohort {index} scenario")
         if scenario not in expected_scenarios:
@@ -147,7 +153,10 @@ def canonicalize_aggregation_summary(payload: Mapping[str, Any]) -> dict[str, An
     raw_champion = payload.get("champion")
     if not isinstance(raw_champion, Mapping):
         raise ReportingValidationError("champion must be an object")
-    champion_model = _required_string(raw_champion.get("model_type"), "champion model_type")
+    champion_model = _required_string(
+        raw_champion.get("run_model_id", raw_champion.get("model_type")),
+        "champion run_model_id",
+    )
     champion_macro = _finite_or_none(raw_champion.get("mean_macro_ap"), field="champion mean_macro_ap")
     if champion_macro is None:
         raise ReportingValidationError("champion macro_ap must be finite")

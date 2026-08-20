@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _require_hash(value: Any, name: str) -> str:
@@ -40,6 +40,12 @@ def _resolve_feature_artifact_hash(
             raise ValueError("multimodal feature artifact hashes disagree")
     value = multimodal_feature_artifact_hash or modality_provenance_hash
     return _require_hash(value, "multimodal_feature_artifact_hash")
+
+
+def _require_selected_mode(value: Any) -> str:
+    if not isinstance(value, str) or value not in {"baseline", "fused"}:
+        raise ValueError("teacher_selected_mode must be exactly 'baseline' or 'fused'")
+    return value
 
 
 def _freeze_metadata(value: Any) -> Any:
@@ -131,6 +137,8 @@ class CachedTokenArtifact:
         _require_hash(self.metadata.get("teacher_checkpoint_hash"), "teacher_checkpoint_hash")
         _require_hash(self.metadata.get("teacher_config_hash"), "teacher_config_hash")
         _require_hash(self.metadata.get("modality_provenance_hash"), "modality_provenance_hash")
+        _require_hash(self.metadata.get("teacher_selection_hash"), "teacher_selection_hash")
+        _require_selected_mode(self.metadata.get("teacher_selected_mode"))
         expected = self.metadata.get("payload_sha256")
         if not isinstance(expected, str) or expected != _canonical_digest(
             np.asarray(self.drug_ids, dtype="<U"), self.tokens, self.availability, {
@@ -165,6 +173,8 @@ class CachedTokenArtifact:
         modality_provenance_hash: str | None = None,
         teacher_checkpoint_hash: str | None = None,
         teacher_config_hash: str | None = None,
+        teacher_selection_hash: str,
+        teacher_selected_mode: str,
     ) -> "CachedTokenArtifact":
         path = Path(path)
         ids = np.asarray([str(drug_id).strip() for drug_id in drug_ids], dtype="<U")
@@ -205,6 +215,10 @@ class CachedTokenArtifact:
             "modality_provenance_hash": _resolve_feature_artifact_hash(
                 multimodal_feature_artifact_hash, modality_provenance_hash
             ),
+            "teacher_selection_hash": _require_hash(
+                teacher_selection_hash, "teacher_selection_hash"
+            ),
+            "teacher_selected_mode": _require_selected_mode(teacher_selected_mode),
         }
         metadata["payload_sha256"] = _canonical_digest(
             ids,
@@ -309,6 +323,8 @@ def build_cached_token_artifact(
     *,
     teacher_checkpoint_hash: str,
     teacher_config_hash: str,
+    teacher_selection_hash: str,
+    teacher_selected_mode: str,
     multimodal_feature_artifact_hash: str | None = None,
     modality_provenance_hash: str | None = None,
 ) -> CachedTokenArtifact:
@@ -391,6 +407,8 @@ def build_cached_token_artifact(
         teacher_provenance_hash=teacher_checkpoint_hash,
         teacher_checkpoint_hash=teacher_checkpoint_hash,
         teacher_config_hash=teacher_config_hash,
+        teacher_selection_hash=teacher_selection_hash,
+        teacher_selected_mode=teacher_selected_mode,
         multimodal_feature_artifact_hash=feature_hash,
     )
     return CachedTokenArtifact.load(path)

@@ -13,6 +13,10 @@ kg_token_count: 4
 hidden_dim: 256
 num_heads: 8
 dropout: 0.1
+modality_summary_token_count: 4
+modality_dropout: 0.1
+enabled_modalities: [molformer, mpnn, kg]
+promotion_min_delta: 0.002
 cache_token_count: 8
 cache_token_dim: 128
 num_organ: 15
@@ -26,5 +30,7 @@ hierarchy_weight: 0.1
 
 feature_artifact_path: null
 feature_artifact_sha256: null
+labels_artifact_sha256: null
+labels_order_sha256: null
 hierarchy_path: null
 hierarchy_sha256: null

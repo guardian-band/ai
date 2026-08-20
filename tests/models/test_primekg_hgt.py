@@ -1,13 +1,34 @@
 import torch
+import pytest
 
 from src.models.primekg_hgt import (
     PrimeKGHGT,
+    TypedLinkPredictor,
     export_hgt_token_artifact,
     load_hgt_checkpoint,
     sample_bipartite_negatives,
     save_hgt_checkpoint,
     split_relation_edges,
 )
+
+
+def test_typed_link_predictor_scales_bilinear_score_and_learns_relation_bias():
+    edge_type = ("drug", "targets", "gene")
+    predictor = TypedLinkPredictor((edge_type,), hidden_dim=4)
+    x_dict = {
+        "drug": torch.nn.functional.normalize(torch.ones(1, 4), dim=-1),
+        "gene": torch.nn.functional.normalize(torch.ones(1, 4), dim=-1),
+    }
+    edge_label_index = torch.tensor([[0], [0]], dtype=torch.long)
+
+    score = predictor(x_dict, edge_type, edge_label_index)
+
+    assert score.shape == (1,)
+    assert score.item() == pytest.approx(0.5)
+    assert torch.isfinite(score).all()
+    assert predictor.relation_bias
+    relation_key = next(iter(predictor.relation_bias))
+    assert predictor.relation_bias[relation_key].shape == torch.Size([])
 
 
 def test_relation_split_is_deterministic_disjoint_and_keeps_message_edges_separate():

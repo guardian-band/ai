@@ -1,12 +1,14 @@
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
+import yaml
 
-from aggregate_results import _verify_run
+from aggregate_results import _verify_completion, _verify_run
 from src.evaluation.metrics import compute_all_metrics
 from src.features.multimodal_feature_artifact import MultimodalFeatureArtifact
 from src.features.cached_token_artifact import CachedTokenArtifact
@@ -19,6 +21,16 @@ from run_precomputed_experiment import (
     validate_training_config,
     preflight_experiment,
     run_precomputed_experiment,
+    _select_teacher_promotion,
+    _build_teacher_selection,
+    _atomic_write_json,
+    _required_run_artifacts,
+    _candidate_grid,
+    _select_distillation_candidate,
+    _validate_teacher_selection,
+    _assert_batch_alignment,
+    _validate_student_teacher_ap,
+    _derive_run_model_id,
 )
 
 
@@ -205,6 +217,153 @@ def test_optimizer_rejects_bool_and_nonfinite_controls():
         build_optimizer(model, {"learning_rate": 0.001, "weight_decay": float("inf")})
 
 
+def test_teacher_promotion_requires_validation_delta_and_supports_fallback():
+    assert _select_teacher_promotion(0.500, 0.501, 0.002) == "baseline"
+    assert _select_teacher_promotion(0.500, 0.502, 0.002) == "baseline"
+    assert _select_teacher_promotion(0.500, 0.503, 0.002) == "fused"
+
+
+def test_morgan_only_teacher_selection_skips_fused_variant():
+    selection, mode = _build_teacher_selection(
+        {"baseline": {"macro_ap": 0.5}}, {"gates": {}, "coverage": {}}, 0.002
+    )
+    assert mode == "baseline"
+    assert selection["selected"]["mode"] == "baseline"
+    assert selection["combined"]["skipped"] is True
+
+
+def test_run_model_id_rejects_spoofed_teacher_id_and_accepts_ordered_subset():
+    assert _derive_run_model_id({"model_type": "multimodal_teacher", "enabled_modalities": []}) == "multimodal_teacher_morgan_only"
+    with pytest.raises(ValueError, match="enabled_modalities"):
+        _derive_run_model_id({"model_type": "multimodal_teacher", "enabled_modalities": ["kg", "molformer"]})
+
+
+@pytest.mark.parametrize(
+    ("combined_ap", "expected_mode"),
+    [(0.501, "baseline"), (0.503, "fused")],
+)
+def test_teacher_selection_records_harmful_fallback_and_useful_promotion(combined_ap, expected_mode):
+    selection, selected_mode = _build_teacher_selection(
+        {
+            "baseline": {"macro_ap": 0.500},
+            "molformer": {"macro_ap": 0.499},
+            "mpnn": {"macro_ap": 0.500},
+            "kg": {"macro_ap": combined_ap},
+            "combined": {"macro_ap": combined_ap},
+        },
+        {"gates": {}, "coverage": {}},
+        0.002,
+    )
+    assert selected_mode == expected_mode
+    assert selection["selected"]["mode"] == expected_mode
+    assert selection["baseline"]["macro_ap"] == 0.500
+    assert selection["combined"]["macro_ap"] == combined_ap
+
+
+def test_distillation_candidate_grid_includes_supervised_only_once_and_tie_breaks():
+    candidates = _candidate_grid(
+        {
+            "distillation_weight_candidates": [1.0, 0.0, 0.0],
+            "distillation_temperature_candidates": [3.0, 2.0],
+        }
+    )
+    assert candidates.count((0.0, 2.0)) == 1
+    assert sum(weight == 0.0 for weight, _ in candidates) == 1
+    selected = _select_distillation_candidate(
+        [
+            {"distillation_weight": 1.0, "temperature": 2.0, "validation_macro_ap": 0.8},
+            {"distillation_weight": 0.0, "temperature": 3.0, "validation_macro_ap": 0.8},
+            {"distillation_weight": 0.0, "temperature": 2.0, "validation_macro_ap": 0.8},
+        ]
+    )
+    assert selected["distillation_weight"] == 0.0
+    assert selected["temperature"] == 2.0
+
+
+def test_student_template_defaults_cover_weight_and_temperature_candidates():
+    config = yaml.safe_load(
+        Path("configs/model_distilled_pair_student.yaml").read_text()
+    )
+
+    assert config["distillation_weight_candidates"] == [0.0, 0.25, 0.5, 1.0]
+    assert config["distillation_temperature_candidates"] == [1.0, 2.0, 4.0]
+    candidates = _candidate_grid(config)
+    assert sum(weight == 0.0 for weight, _ in candidates) == 1
+    assert {
+        (weight, temperature)
+        for weight, temperature in candidates
+        if weight != 0.0
+    } == {
+        (weight, temperature)
+        for weight in (0.25, 0.5, 1.0)
+        for temperature in (1.0, 2.0, 4.0)
+    }
+
+
+def test_student_teacher_batch_alignment_rejects_shuffled_or_unequal_ids():
+    _assert_batch_alignment(("p1", "p2"), ("p1", "p2"))
+    with pytest.raises(ValueError, match="pair_id"):
+        _assert_batch_alignment(("p1", "p2"), ("p2", "p1"))
+    with pytest.raises(ValueError, match="exhaustion|length"):
+        _assert_batch_alignment(("p1",), ("p1", "p2"))
+
+
+def test_student_validation_drop_gate_is_strict_and_validation_only():
+    _validate_student_teacher_ap(0.496, 0.500, 0.005)
+    with pytest.raises(ValueError, match="student_max_validation_ap_drop"):
+        _validate_student_teacher_ap(0.494, 0.500, 0.005)
+
+
+def test_teacher_completion_requires_selection_artifact_and_records_tampering(tmp_path):
+    required = _required_run_artifacts(student_mode=False)
+    assert "teacher_validation_selection.json" in required
+    assert "teacher_validation_selection.json" not in _required_run_artifacts(student_mode=True)
+
+    missing_dir = tmp_path / "missing"
+    missing_dir.mkdir()
+    for name in required:
+        if name != "teacher_validation_selection.json" and name != "metrics.json":
+            (missing_dir / name).write_bytes(name.encode())
+    trainer = StateGuardedTrainer(str(missing_dir))
+    trainer.begin_training()
+    trainer.model_selected()
+    trainer.validation_frozen()
+    trainer.evaluate_test()
+    with pytest.raises(FileNotFoundError, match="teacher_validation_selection.json"):
+        trainer.complete({}, required_artifacts=required)
+
+    complete_dir = tmp_path / "complete"
+    complete_dir.mkdir()
+    for name in required:
+        if name != "metrics.json":
+            (complete_dir / name).write_bytes(name.encode())
+    _atomic_write_json(
+        complete_dir / "teacher_validation_selection.json",
+        {"selected": {"mode": "baseline"}},
+    )
+    trainer = StateGuardedTrainer(str(complete_dir))
+    trainer.begin_training()
+    trainer.model_selected()
+    trainer.validation_frozen()
+    trainer.evaluate_test()
+    trainer.complete({}, required_artifacts=required)
+    _verify_completion(complete_dir)
+    (complete_dir / "teacher_validation_selection.json").write_text("tampered")
+    with pytest.raises(ValueError, match="teacher_validation_selection.json"):
+        _verify_completion(complete_dir)
+
+
+def test_teacher_selection_file_requires_hash_mode_and_finite_ap(tmp_path):
+    path = tmp_path / "teacher_validation_selection.json"
+    path.write_text(json.dumps({"selected": {"mode": "fused", "macro_ap": 0.5}}))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    selection = _validate_teacher_selection(path, expected_hash=digest)
+    assert selection["selected"]["mode"] == "fused"
+    path.write_text(json.dumps({"selected": {"mode": "invalid", "macro_ap": 0.5}}))
+    with pytest.raises(ValueError, match="mode|hash"):
+        _validate_teacher_selection(path, expected_hash=digest)
+
+
 @pytest.mark.parametrize("key,value", [("supervised_weight", -1.0), ("distillation_weight", float("nan"))])
 def test_student_distillation_weights_are_validated(key, value):
     config = {
@@ -221,6 +380,28 @@ def test_student_distillation_weights_are_validated(key, value):
     }
     config[key] = value
     with pytest.raises(ValueError, match=key):
+        validate_training_config(config)
+
+
+def test_distillation_candidates_and_validation_drop_are_validated():
+    config = {
+        "model_type": "distilled_pair_student",
+        "batch_size": 1,
+        "epochs": 1,
+        "patience": 1,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0,
+        "hierarchy_weight": 0.0,
+        "supervised_weight": 1.0,
+        "distillation_weight": 1.0,
+        "distillation_temperature": 2.0,
+        "distillation_weight_candidates": [0.0, 1.0],
+        "distillation_temperature_candidates": [2.0, 3.0],
+        "student_max_validation_ap_drop": 0.005,
+    }
+    validate_training_config(config)
+    config["student_max_validation_ap_drop"] = -0.1
+    with pytest.raises(ValueError, match="student_max_validation_ap_drop"):
         validate_training_config(config)
 
 
@@ -309,9 +490,13 @@ def test_student_preflight_loads_and_freezes_teacher_checkpoint(tmp_path):
     cache_path = tmp_path / "cached.npz"
     teacher_checkpoint_hash = hashlib.sha256(teacher_checkpoint.read_bytes()).hexdigest()
     teacher_config_hash = hashlib.sha256(teacher_config.read_bytes()).hexdigest()
+    selection_path = tmp_path / "teacher_validation_selection.json"
+    selection_path.write_text(json.dumps({"selected": {"mode": "baseline", "macro_ap": 0.5}}))
+    selection_hash = hashlib.sha256(selection_path.read_bytes()).hexdigest()
     CachedTokenArtifact.write(
         cache_path, ["D1", "D2", "D3"], np.ones((3, 3, 6), dtype=np.float32), np.ones((3, 3), dtype=bool),
         teacher_provenance_hash=teacher_checkpoint_hash, teacher_checkpoint_hash=teacher_checkpoint_hash, teacher_config_hash=teacher_config_hash,
+        teacher_selection_hash=selection_hash, teacher_selected_mode="baseline",
         modality_provenance_hash=hashlib.sha256((tmp_path / "features.npz").read_bytes()).hexdigest(),
     )
     teacher_config_text = teacher_config.read_text()
@@ -324,13 +509,20 @@ def test_student_preflight_loads_and_freezes_teacher_checkpoint(tmp_path):
         "cached_token_artifact_path: cached.npz", f"cached_token_artifact_sha256: {hashlib.sha256(cache_path.read_bytes()).hexdigest()}",
         "teacher_config_path: teacher.yaml", f"teacher_config_sha256: {teacher_config_hash}",
         "teacher_checkpoint_path: teacher.pt", f"teacher_checkpoint_sha256: {teacher_checkpoint_hash}",
+        "teacher_selection_path: teacher_validation_selection.json", f"teacher_selection_sha256: {selection_hash}", "teacher_selected_mode: baseline",
         "hierarchy_path: hierarchy.json", f"hierarchy_sha256: {hashlib.sha256((tmp_path / 'hierarchy.json').read_bytes()).hexdigest()}",
         "feature_artifact_path: features.npz", f"feature_artifact_sha256: {hashlib.sha256((tmp_path / 'features.npz').read_bytes()).hexdigest()}",
     ]))
     plan = preflight_experiment(student_config, manifest)
     assert plan.teacher_model is not None
     assert plan.teacher_model.training is False
+    assert plan.teacher_model.training_stage == "baseline"
     assert all(parameter.requires_grad is False for parameter in plan.teacher_model.parameters())
+
+    selection_path.write_text(json.dumps({"selected": {"mode": "baseline", "macro_ap": 0.6}}))
+    with pytest.raises(ValueError, match="selection hash"):
+        preflight_experiment(student_config, manifest)
+    selection_path.write_text(json.dumps({"selected": {"mode": "baseline", "macro_ap": 0.5}}))
 
     wrong_cache = tmp_path / "cached_wrong_modality.npz"
     CachedTokenArtifact.write(
@@ -341,6 +533,8 @@ def test_student_preflight_loads_and_freezes_teacher_checkpoint(tmp_path):
         teacher_provenance_hash=teacher_checkpoint_hash,
         teacher_checkpoint_hash=teacher_checkpoint_hash,
         teacher_config_hash=teacher_config_hash,
+        teacher_selection_hash=selection_hash,
+        teacher_selected_mode="baseline",
         multimodal_feature_artifact_hash=HASH_C,
     )
     wrong_config = student_config.read_text()

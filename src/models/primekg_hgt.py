@@ -291,9 +291,18 @@ class TypedLinkPredictor(nn.Module):
 
     def __init__(self, edge_types: Sequence[EdgeType], hidden_dim: int) -> None:
         super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError("hidden_dim must be positive")
+        self.hidden_dim = int(hidden_dim)
         self.relations = nn.ParameterDict(
             {
                 _relation_key(edge_type): nn.Parameter(torch.ones(hidden_dim))
+                for edge_type in edge_types
+            }
+        )
+        self.relation_bias = nn.ParameterDict(
+            {
+                _relation_key(edge_type): nn.Parameter(torch.zeros(()))
                 for edge_type in edge_types
             }
         )
@@ -307,9 +316,14 @@ class TypedLinkPredictor(nn.Module):
         source_type, _, destination_type = edge_type
         source, destination = edge_label_index
         relation = self.relations[_relation_key(edge_type)]
-        return (
+        bias = self.relation_bias[_relation_key(edge_type)]
+        score = (
             x_dict[source_type][source] * relation * x_dict[destination_type][destination]
-        ).sum(dim=-1)
+        ).sum(dim=-1) / math.sqrt(self.hidden_dim)
+        score = score + bias
+        if not torch.isfinite(score).all():
+            raise FloatingPointError("TypedLinkPredictor produced non-finite logits")
+        return score
 
 
 def save_hgt_checkpoint(

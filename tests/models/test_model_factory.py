@@ -1,6 +1,7 @@
 import torch
 from pathlib import Path
 import pytest
+import yaml
 
 from src.models.factory import (
     LogisticPairModel,
@@ -9,6 +10,7 @@ from src.models.factory import (
     UnsupportedModelConfiguration,
     create_model,
     load_experiment_config,
+    derive_run_model_id,
 )
 
 
@@ -39,6 +41,71 @@ def test_advanced_config_is_the_executable_multimodal_teacher_template():
     config = load_experiment_config("configs/models/advanced.yaml")
     assert config["model_type"] == "multimodal_teacher"
     assert isinstance(create_model(config, num_labels=100), MultiModalTeacher)
+
+
+def test_multimodal_teacher_factory_passes_balanced_modality_controls():
+    from src.models.multimodal_teacher_student import MultiModalTeacher
+
+    config = {
+        "model_type": "multimodal_teacher",
+        "morgan_dim": 8,
+        "molformer_dim": 6,
+        "mpnn_dim": 7,
+        "kg_dim": 5,
+        "molformer_token_count": 3,
+        "mpnn_token_count": 4,
+        "kg_token_count": 2,
+        "hidden_dim": 16,
+        "num_organ": 2,
+        "num_specific": 4,
+        "num_heads": 4,
+        "modality_summary_token_count": 2,
+        "modality_dropout": 0.2,
+        "enabled_modalities": ["molformer", "kg"],
+    }
+
+    model = create_model(config, num_labels=4)
+
+    assert isinstance(model, MultiModalTeacher)
+    assert model.modality_summary_token_count == 2
+    assert model.modality_dropout == 0.2
+    assert model.enabled_modalities == ("molformer", "kg")
+
+
+@pytest.mark.parametrize(
+    ("enabled_modalities", "expected"),
+    [
+        ([], "multimodal_teacher_morgan_only"),
+        (["molformer"], "multimodal_teacher_morgan_molformer"),
+        (["mpnn"], "multimodal_teacher_morgan_mpnn"),
+        (["kg"], "multimodal_teacher_morgan_hgt"),
+        (["molformer", "mpnn", "kg"], "multimodal_teacher_full"),
+    ],
+)
+def test_teacher_run_model_id_is_derived_from_enabled_modalities(enabled_modalities, expected):
+    assert derive_run_model_id(
+        {"model_type": "multimodal_teacher", "enabled_modalities": enabled_modalities}
+    ) == expected
+    assert derive_run_model_id({"model_type": "distilled_pair_student", "run_model_id": "spoof"}) == "distilled_pair_student"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "multimodal_teacher_morgan_only.yaml",
+        "multimodal_teacher_morgan_molformer.yaml",
+        "multimodal_teacher_morgan_mpnn.yaml",
+        "multimodal_teacher_morgan_hgt.yaml",
+        "multimodal_teacher_full.yaml",
+        "distilled_pair_student.yaml",
+    ],
+)
+def test_ablation_templates_have_null_artifact_contract(filename):
+    payload = yaml.safe_load(Path("configs/ablations", filename).read_text())
+    assert payload["feature_artifact_path"] is None if payload["model_type"] == "multimodal_teacher" else True
+    assert payload["hierarchy_path"] is None
+    if payload["model_type"] == "multimodal_teacher":
+        assert "enabled_modalities" in payload
 
 
 def test_invalid_model_type_config_fails_clearly(tmp_path):

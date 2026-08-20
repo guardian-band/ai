@@ -5,6 +5,7 @@ from src.features.cached_token_artifact import CachedTokenArtifact
 
 TEACHER_HASH = "a" * 64
 MODALITY_HASH = "b" * 64
+SELECTION_HASH = "c" * 64
 
 
 def _arrays():
@@ -24,6 +25,8 @@ def test_cached_tokens_are_sorted_and_round_trip_without_pickle(tmp_path):
         available,
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     artifact = CachedTokenArtifact.load(path)
     assert artifact._id_to_index["drug-a"] == 0
@@ -51,6 +54,8 @@ def test_cached_tokens_reject_invalid_inputs(tmp_path, ids, tokens, message):
             np.ones((len(ids), 3), dtype=bool),
             teacher_provenance_hash=TEACHER_HASH,
             modality_provenance_hash=MODALITY_HASH,
+            teacher_selection_hash=SELECTION_HASH,
+            teacher_selected_mode="baseline",
         )
 
 
@@ -64,6 +69,8 @@ def test_cached_tokens_reject_tampering(tmp_path):
         available,
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     payload = bytearray(path.read_bytes())
     payload[-1] ^= 0x01
@@ -82,6 +89,8 @@ def test_cached_tokens_reject_unknown_drug(tmp_path):
         available,
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     artifact = CachedTokenArtifact.load(path)
     with pytest.raises(KeyError, match="unknown"):
@@ -98,6 +107,8 @@ def test_cached_tokens_require_canonical_hashes(tmp_path):
             available,
             teacher_provenance_hash="teacher-hash",
             modality_provenance_hash=MODALITY_HASH,
+            teacher_selection_hash=SELECTION_HASH,
+            teacher_selected_mode="baseline",
         )
 
 
@@ -111,6 +122,8 @@ def test_cached_tokens_are_immutable_but_lookups_are_owned_copies(tmp_path):
         available,
         teacher_provenance_hash=TEACHER_HASH,
         modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="baseline",
     )
     artifact = CachedTokenArtifact.load(path)
     with pytest.raises(ValueError):
@@ -120,3 +133,35 @@ def test_cached_tokens_are_immutable_but_lookups_are_owned_copies(tmp_path):
     looked_up, _ = artifact.lookup("drug-a")
     looked_up[0, 0] = 999.0
     assert artifact.lookup("drug-a")[0][0, 0] != 999.0
+
+
+def test_cached_tokens_record_teacher_selection_provenance(tmp_path):
+    path = tmp_path / "tokens.npz"
+    ids, tokens, available = _arrays()
+    artifact = CachedTokenArtifact.write(
+        path,
+        ids,
+        tokens,
+        available,
+        teacher_provenance_hash=TEACHER_HASH,
+        modality_provenance_hash=MODALITY_HASH,
+        teacher_selection_hash=SELECTION_HASH,
+        teacher_selected_mode="fused",
+    )
+    assert artifact.metadata["teacher_selection_hash"] == SELECTION_HASH
+    assert artifact.metadata["teacher_selected_mode"] == "fused"
+
+
+def test_cached_tokens_reject_invalid_teacher_selection_mode(tmp_path):
+    ids, tokens, available = _arrays()
+    with pytest.raises(ValueError, match="teacher_selected_mode"):
+        CachedTokenArtifact.write(
+            tmp_path / "invalid-selection.npz",
+            ids,
+            tokens,
+            available,
+            teacher_provenance_hash=TEACHER_HASH,
+            modality_provenance_hash=MODALITY_HASH,
+            teacher_selection_hash=SELECTION_HASH,
+            teacher_selected_mode="invalid",
+        )

@@ -23,6 +23,56 @@ SUPPORTED_MODEL_TYPES = {
     "distilled_pair_student",
 }
 
+TEACHER_AUXILIARY_MODALITIES = ("molformer", "mpnn", "kg")
+_TEACHER_RUN_MODEL_IDS = {
+    (): "multimodal_teacher_morgan_only",
+    ("molformer",): "multimodal_teacher_morgan_molformer",
+    ("mpnn",): "multimodal_teacher_morgan_mpnn",
+    ("kg",): "multimodal_teacher_morgan_hgt",
+    TEACHER_AUXILIARY_MODALITIES: "multimodal_teacher_full",
+}
+
+
+def validate_enabled_modalities(value: Any = None) -> tuple[str, ...]:
+    """Validate the ordered auxiliary modality subset used by the Teacher."""
+
+    if value is None:
+        return TEACHER_AUXILIARY_MODALITIES
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            "enabled_modalities must be an ordered subset of molformer, mpnn, kg"
+        )
+    normalized = tuple(value)
+    if any(not isinstance(name, str) for name in normalized):
+        raise ValueError("enabled_modalities entries must be strings")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("enabled_modalities must not contain duplicates")
+    if any(name not in TEACHER_AUXILIARY_MODALITIES for name in normalized):
+        raise ValueError(
+            "enabled_modalities must be an ordered subset of molformer, mpnn, kg"
+        )
+    expected_order = tuple(
+        name for name in TEACHER_AUXILIARY_MODALITIES if name in normalized
+    )
+    if normalized != expected_order:
+        raise ValueError("enabled_modalities must preserve molformer, mpnn, kg order")
+    return normalized
+
+
+def derive_run_model_id(config: Mapping[str, Any]) -> str:
+    """Derive the provenance-safe model ID; never trust a config-supplied ID."""
+
+    model_type = config.get("model_type") if isinstance(config, Mapping) else None
+    if model_type == "multimodal_teacher":
+        return _TEACHER_RUN_MODEL_IDS[
+            validate_enabled_modalities(config.get("enabled_modalities"))
+        ]
+    if model_type == "distilled_pair_student":
+        return "distilled_pair_student"
+    if isinstance(model_type, str) and model_type:
+        return model_type
+    raise ValueError("config must define model_type before deriving run_model_id")
+
 
 def validate_model_type(config: Mapping[str, Any]) -> str:
     model_type = config.get("model_type") if isinstance(config, Mapping) else None
@@ -266,6 +316,9 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
             dropout=config.get("dropout", 0.0),
             cache_token_count=config.get("cache_token_count", 8),
             cache_token_dim=config.get("cache_token_dim", 128),
+            modality_summary_token_count=config.get("modality_summary_token_count", 4),
+            modality_dropout=config.get("modality_dropout", 0.0),
+            enabled_modalities=config.get("enabled_modalities"),
         )
     if model_type == "distilled_pair_student":
         from src.models.multimodal_teacher_student import DistilledPairStudent

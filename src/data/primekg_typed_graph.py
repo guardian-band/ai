@@ -105,6 +105,51 @@ def prepare_typed_primekg(frame: pd.DataFrame) -> PreparedTypedPrimeKG:
     )
 
 
+def typed_edge_index_sha256(
+    edge_index: Mapping[tuple[str, str, str], torch.Tensor],
+) -> str:
+    """Hash a typed graph canonically, independent of mapping or edge order."""
+
+    digest = hashlib.sha256()
+    for edge_type in sorted(edge_index):
+        if (
+            not isinstance(edge_type, tuple)
+            or len(edge_type) != 3
+            or not all(isinstance(item, str) and item for item in edge_type)
+        ):
+            raise ValueError("edge types must be non-empty three-part string tuples")
+        edges = edge_index[edge_type]
+        if edges.dtype != torch.long or edges.ndim != 2 or edges.shape[0] != 2:
+            raise ValueError("edge indices must be int64 with shape [2, E]")
+        values = edges.detach().cpu().numpy().astype("<i8", copy=False)
+        if values.shape[1]:
+            order = np.lexsort((values[1], values[0]))
+            values = values[:, order]
+        values = np.ascontiguousarray(values)
+        digest.update("\x1f".join(edge_type).encode("utf-8"))
+        digest.update(str(values.shape).encode("ascii"))
+        digest.update(values.tobytes())
+    return digest.hexdigest()
+
+
+def validate_typed_edge_index_sha256(
+    edge_index: Mapping[tuple[str, str, str], torch.Tensor], expected_sha256: str
+) -> None:
+    """Fail closed when a declared typed message graph hash differs."""
+
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise ValueError("declared graph hash must be a canonical SHA-256 hash")
+    actual = typed_edge_index_sha256(edge_index)
+    if actual != expected_sha256:
+        raise ValueError(
+            f"message graph hash mismatch: declared {expected_sha256}, actual {actual}"
+        )
+
+
 def build_leakage_safe_edge_partitions(
     edge_index: Mapping[tuple[str, str, str], torch.Tensor],
     *,

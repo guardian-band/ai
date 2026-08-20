@@ -35,14 +35,30 @@ def test_molformer_producer_returns_token_embeddings_and_padding_mask():
         model_id="ibm-research/MoLFormer-XL-both-10pct",
         revision="1" * 40,
         max_length=4,
-        output_token_count=2,
+        output_token_count=4,
         device="cpu",
     )
     tokens, padding = producer.encode(["CCO", "CC"])
-    assert tokens.shape == (2, 2, 3)
+    assert tokens.shape == (2, 4, 3)
     assert tokens.dtype == np.float32
-    assert padding.tolist() == [[False, False], [False, False]]
+    assert padding.tolist() == [[False, False, False, True], [False, False, True, True]]
     assert np.all(tokens[padding] == 0.0)
+    assert np.array_equal(tokens[0, 0], [0.0, 0.0, 0.0])
+    assert np.array_equal(tokens[0, 2], [2.0, 2.0, 2.0])
+    assert np.array_equal(tokens[1, 1], [5.0, 5.0, 5.0])
+
+
+def test_molformer_rejects_token_count_that_does_not_match_max_length():
+    with pytest.raises(ValueError, match="output_token_count.*max_length"):
+        MolFormerTokenProducer(
+            FakeTokenizer(),
+            FakeModel(),
+            model_id="ibm-research/MoLFormer-XL-both-10pct",
+            revision="1" * 40,
+            max_length=4,
+            output_token_count=2,
+            device="cpu",
+        )
 
 
 def test_molformer_loader_requires_pinned_revision_and_explicit_remote_code():
@@ -59,7 +75,7 @@ def test_molformer_export_writes_safe_artifact_in_batches(tmp_path):
         model_id="ibm-research/MoLFormer-XL-both-10pct",
         revision="1" * 40,
         max_length=4,
-        output_token_count=2,
+        output_token_count=4,
         device="cpu",
     )
     artifact = export_molformer_token_artifact(
@@ -71,7 +87,12 @@ def test_molformer_export_writes_safe_artifact_in_batches(tmp_path):
         batch_size=1,
     )
     assert artifact.drug_ids == ("D1", "D2")
-    assert artifact.tokens.shape == (2, 2, 3)
+    assert artifact.tokens.shape == (2, 4, 3)
+    assert artifact.padding_mask.tolist() == [
+        [False, False, False, True],
+        [False, False, False, True],
+    ]
+    assert artifact.metadata["producer_config"]["token_count"] == 4
     assert artifact.metadata["producer_config"]["revision"] == "1" * 40
 
 
@@ -82,7 +103,7 @@ def test_molformer_export_marks_invalid_smiles_unavailable(tmp_path):
         model_id="ibm-research/MoLFormer-XL-both-10pct",
         revision="1" * 40,
         max_length=4,
-        output_token_count=2,
+        output_token_count=4,
         device="cpu",
     )
     artifact = export_molformer_token_artifact(

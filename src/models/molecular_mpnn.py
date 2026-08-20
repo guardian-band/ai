@@ -210,6 +210,15 @@ class MolecularMPNN(nn.Module):
         return hidden
 
     def encode_tokens(self, batch: MolecularGraphBatch) -> tuple[torch.Tensor, torch.Tensor]:
+        atom_counts = [
+            int(batch.graph_ptr[index + 1] - batch.graph_ptr[index])
+            for index in range(batch.batch_size)
+        ]
+        if atom_counts and max(atom_counts) > self.token_count:
+            raise ValueError(
+                f"token_count={self.token_count} cannot encode {max(atom_counts)} atoms; "
+                f"required minimum token_count={max(atom_counts)}"
+            )
         hidden = self.encode_nodes(batch)
         tokens = hidden.new_zeros((batch.batch_size, self.token_count, self.hidden_dim))
         padding_mask = torch.ones(
@@ -218,7 +227,7 @@ class MolecularMPNN(nn.Module):
         for graph_index in range(batch.batch_size):
             start = int(batch.graph_ptr[graph_index])
             stop = int(batch.graph_ptr[graph_index + 1])
-            count = min(stop - start, self.token_count)
+            count = stop - start
             tokens[graph_index, :count] = hidden[start : start + count]
             padding_mask[graph_index, :count] = False
         return tokens, padding_mask
@@ -326,6 +335,7 @@ def export_mpnn_token_artifact(
     checkpoint_sha256: str,
     batch_size: int = 64,
     device: str | torch.device = "cpu",
+    upstream_validation_loss: float | None = None,
 ) -> TokenFeatureArtifact:
     """Export deterministic fixed atom tokens from a trained MPNN."""
 
@@ -348,6 +358,29 @@ def export_mpnn_token_artifact(
         available[index] = True
     if not graphs:
         raise ValueError("at least one valid SMILES is required for MPNN export")
+    atom_counts = [int(graph.atom_features.shape[0]) for graph in graphs]
+    insufficient = [
+        (ids[index], count)
+        for index, count in zip(valid_indices, atom_counts, strict=True)
+        if count > model.token_count
+    ]
+    if insufficient:
+        minimum = max(count for _, count in insufficient)
+        affected = ", ".join(f"{drug_id} ({count})" for drug_id, count in insufficient)
+        raise ValueError(
+            f"MPNN token_count={model.token_count} is insufficient; required minimum "
+            f"token_count={minimum}; affected drug IDs: {affected}"
+        )
+    if upstream_validation_loss is not None and not math.isfinite(float(upstream_validation_loss)):
+        raise ValueError("upstream_validation_loss must be finite when provided")
+    distribution = {
+        "counts": {
+            str(count): atom_counts.count(count) for count in sorted(set(atom_counts))
+        },
+        "max": max(atom_counts),
+        "mean": float(np.mean(atom_counts)),
+        "min": min(atom_counts),
+    }
     model = model.to(device).eval()
     all_tokens = np.zeros(
         (len(ids), model.token_count, model.hidden_dim), dtype=np.float32
@@ -374,6 +407,15 @@ def export_mpnn_token_artifact(
             "layers": model.layers,
             "token_count": model.token_count,
             "pretraining_objective": "masked_atom_identity",
+            "atom_token_count_distribution": distribution,
+            "truncation_count": 0,
+            "source_sha256": source_sha256,
+            "checkpoint_sha256": checkpoint_sha256,
+            "upstream_validation_loss": (
+                None
+                if upstream_validation_loss is None
+                else float(upstream_validation_loss)
+            ),
         },
         source_sha256=source_sha256,
         checkpoint_sha256=checkpoint_sha256,

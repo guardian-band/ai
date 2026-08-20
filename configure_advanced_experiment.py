@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
 
 import yaml
 
-from run_precomputed_experiment import preflight_experiment
+from run_precomputed_experiment import _validate_teacher_selection, preflight_experiment
 from src.data.manifest_dataset import load_manifest_records
 from src.features.cached_token_artifact import CachedTokenArtifact
 from src.features.multimodal_feature_artifact import MultimodalFeatureArtifact
 from src.models.hierarchy import load_hierarchy_mapping
+from src.models.factory import derive_run_model_id, validate_enabled_modalities
 from src.training.engine import verify_manifest
 
 
@@ -49,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--teacher-config", type=Path)
     parser.add_argument("--teacher-checkpoint", type=Path)
+    parser.add_argument("--teacher-selection", type=Path)
     return parser.parse_args()
 
 
@@ -67,6 +70,18 @@ def main() -> None:
     payload["num_organ"] = len(hierarchy.organ_order)
     payload["hierarchy_path"] = str(args.hierarchy.resolve())
     payload["hierarchy_sha256"] = _hash(args.hierarchy)
+    labels_path = Path(manifest["labels_path"])
+    if not labels_path.is_absolute():
+        labels_path = manifest_path.parent / labels_path
+    payload["manifest_hash"] = manifest["manifest_hash"]
+    payload["labels_artifact_sha256"] = _hash(labels_path)
+    payload["labels_order_sha256"] = hashlib.sha256(
+        json.dumps(
+            [str(label["cui"]) for label in labels],
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+    ).hexdigest()
 
     if args.model == "teacher":
         if args.features is None:
@@ -76,6 +91,9 @@ def main() -> None:
         for key in ("benchmark_id", "scenario", "seed", "manifest_hash"):
             if compatibility[key] != manifest[key]:
                 raise ValueError(f"feature artifact is incompatible with manifest field {key}")
+        payload["enabled_modalities"] = list(
+            validate_enabled_modalities(payload.get("enabled_modalities"))
+        )
         payload.update(
             {
                 "model_type": "multimodal_teacher",
@@ -101,10 +119,19 @@ def main() -> None:
         ]
         if missing:
             raise ValueError(f"student configuration requires {', '.join(missing)}")
+        teacher_config_payload = yaml.safe_load(args.teacher_config.read_text())
+        if not isinstance(teacher_config_payload, dict):
+            raise ValueError("teacher config must be a YAML mapping")
+        teacher_model_id = derive_run_model_id(teacher_config_payload)
         teacher_checkpoint = args.teacher_checkpoint or Path("artifacts/runs") / (
-            f"multimodal_teacher__{manifest['scenario']}__seed_{manifest['seed']}__"
+            f"{teacher_model_id}__{manifest['scenario']}__seed_{manifest['seed']}__"
             f"{manifest['manifest_hash']}"
         ) / "checkpoint_best.pt"
+        teacher_selection = args.teacher_selection or teacher_checkpoint.with_name(
+            "teacher_validation_selection.json"
+        )
+        selection = _validate_teacher_selection(teacher_selection)
+        selection_hash = _hash(teacher_selection)
         cache = CachedTokenArtifact.load(args.cache)
         payload.update(
             {
@@ -117,6 +144,9 @@ def main() -> None:
                 "teacher_config_sha256": _hash(args.teacher_config),
                 "teacher_checkpoint_path": str(teacher_checkpoint.resolve()),
                 "teacher_checkpoint_sha256": _hash(teacher_checkpoint),
+                "teacher_selection_path": str(teacher_selection.resolve()),
+                "teacher_selection_sha256": selection_hash,
+                "teacher_selected_mode": selection["selected"]["mode"],
             }
         )
     _write_yaml(args.output, payload)

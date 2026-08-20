@@ -1,8 +1,5 @@
-# Offline teacher configuration. Repository producer commands build every
-# artifact below; paths and hashes remain explicit to make provenance fail-closed.
 model_type: multimodal_teacher
 training_input_mode: precomputed_modalities
-
 morgan_dim: 2048
 molformer_dim: 768
 mpnn_dim: 256
@@ -15,7 +12,7 @@ num_heads: 8
 dropout: 0.1
 modality_summary_token_count: 4
 modality_dropout: 0.1
-enabled_modalities: [molformer, mpnn, kg]
+enabled_modalities: [molformer]
 promotion_min_delta: 0.002
 cache_token_count: 8
 cache_token_dim: 128
@@ -27,24 +24,9 @@ patience: 5
 learning_rate: 0.001
 weight_decay: 0.0001
 hierarchy_weight: 0.1
-
-# Deliberately null until an offline producer has emitted and hashed the data.
 feature_artifact_path: null
 feature_artifact_sha256: null
 labels_artifact_sha256: null
 labels_order_sha256: null
 hierarchy_path: null
 hierarchy_sha256: null
-offline_feature_artifacts:
-  morgan:
-    path: null
-    sha256: null
-  molformer_tokens:
-    path: null
-    sha256: null
-  mpnn_tokens:
-    path: null
-    sha256: null
-  kg_tokens:
-    path: null
-    sha256: null

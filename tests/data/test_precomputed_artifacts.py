@@ -16,6 +16,7 @@ HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
 HASH_D = "d" * 64
+HASH_E = "e" * 64
 
 
 def _feature_arrays(count, *, morgan=None):
@@ -113,6 +114,8 @@ def precomputed_fixture(tmp_path):
         teacher_provenance_hash=HASH_A,
         teacher_checkpoint_hash=HASH_A,
         teacher_config_hash=HASH_B,
+        teacher_selection_hash=HASH_E,
+        teacher_selected_mode="baseline",
         modality_provenance_hash=HASH_C,
     )
     hierarchy = {"schema_version": 1, "organ_order": ["O1"], "mappings": [{"specific_cui": "C1", "organ_index": 0}, {"specific_cui": "C2", "organ_index": 0}]}
