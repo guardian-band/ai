@@ -58,3 +58,14 @@ def test_calibration_preserves_average_precision_ranking():
     assert average_precision_score(labels.ravel(), logits.ravel()) == pytest.approx(
         average_precision_score(labels.ravel(), probabilities.ravel())
     )
+
+
+def test_temperature_fit_improves_or_preserves_binary_nll():
+    logits = np.tile(np.array([-4.0, -2.0, 2.0, 4.0]), 10_000)
+    labels = np.tile(np.array([0.0, 0.0, 1.0, 1.0]), 10_000)
+    temperature = fit_temperature(logits, labels)
+
+    def nll(values):
+        return np.mean(np.logaddexp(0.0, values) - labels * values)
+
+    assert nll(logits / temperature) <= nll(logits) + 1e-12

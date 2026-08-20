@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from sklearn.metrics import average_precision_score
+from scipy.optimize import minimize_scalar
 
 
 MIN_TEMPERATURE = 0.05
@@ -82,29 +81,25 @@ def fit_temperature(logits: np.ndarray, labels: np.ndarray) -> float:
     if valid_logits.size == 0 or np.unique(valid_labels).size < 2:
         return 1.0
 
-    t_logits = torch.tensor(valid_logits, dtype=torch.float32)
-    t_labels = torch.tensor(valid_labels, dtype=torch.float32)
-    bce = nn.BCEWithLogitsLoss()
-    initial_nll = float(bce(t_logits, t_labels).item())
-    initial_ap = float(average_precision_score(valid_labels, valid_logits))
+    def nll_for_log_temperature(log_temperature: float) -> float:
+        temperature = float(np.exp(log_temperature))
+        scaled = valid_logits / temperature
+        return float(np.mean(np.logaddexp(0.0, scaled) - valid_labels * scaled))
 
-    scaler = TemperatureScaler()
-    optimizer = optim.LBFGS(scaler.parameters(), lr=0.01, max_iter=100)
+    initial_nll = nll_for_log_temperature(0.0)
+    result = minimize_scalar(
+        nll_for_log_temperature,
+        bounds=(float(np.log(MIN_TEMPERATURE)), float(np.log(MAX_TEMPERATURE))),
+        method="bounded",
+        options={"xatol": 1e-5, "maxiter": 64},
+    )
+    if not result.success or not np.isfinite(result.fun):
+        return 1.0
+    fitted_temperature = _validate_temperature(np.exp(result.x))
 
-    def eval_closure():
-        optimizer.zero_grad()
-        loss = bce(scaler(t_logits), t_labels)
-        loss.backward()
-        return loss
-
-    optimizer.step(eval_closure)
-    fitted_temperature = _validate_temperature(torch.exp(scaler.log_temp).item())
-    scaled_logits = valid_logits / fitted_temperature
-    final_nll = float(bce(torch.tensor(scaled_logits), t_labels).item())
-    final_ap = float(average_precision_score(valid_labels, scaled_logits))
-
-    # Temperature scaling is monotonic, so ranking/AP must remain unchanged.
-    if final_nll < initial_nll and abs(final_ap - initial_ap) <= 1e-10:
+    # Positive scalar temperature scaling is monotonic, so ranking/AP is
+    # unchanged by construction. Keep identity scaling unless NLL improves.
+    if float(result.fun) < initial_nll:
         return fitted_temperature
     return 1.0
 

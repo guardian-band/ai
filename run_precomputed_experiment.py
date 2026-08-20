@@ -566,6 +566,10 @@ def run_precomputed_experiment(
     val_logits_frame = pd.DataFrame(val_logits, columns=labels)
     val_targets_frame = pd.DataFrame(val_targets, columns=labels)
     calibrated, temperatures = calibrate_validation_logits({"specific": val_logits_frame}, {"specific": val_targets_frame})
+    print(
+        f"[calibration] model={model_name} temperature={temperatures['specific']:.6f}",
+        flush=True,
+    )
     thresholds = select_thresholds(val_targets_frame, calibrated["specific"])
     _persist_prediction_artifacts(str(run_dir), "validation", plan.validation_dataset, val_logits, val_targets, calibrated["specific"].to_numpy())
     (run_dir / "calibration.json").write_text(json.dumps({"temperatures": temperatures, "input": "validation_raw_logits"}, indent=2))
