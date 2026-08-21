@@ -1,6 +1,7 @@
 import numpy as np
+from types import MappingProxyType
 
-from scripts.audit_cold_mpnn import _bootstrap_delta, _macro_ap
+from scripts.audit_cold_mpnn import _bootstrap_delta, _json_ready, _macro_ap
 
 
 def test_macro_ap_and_bootstrap_report_are_deterministic():
@@ -12,3 +13,8 @@ def test_macro_ap_and_bootstrap_report_are_deterministic():
     second = _bootstrap_delta(baseline, fused, targets, samples=20, seed=42)
     assert first == second
     assert 0 < first["samples_valid"] <= 20
+
+
+def test_json_ready_recursively_converts_immutable_metadata():
+    value = MappingProxyType({"nested": MappingProxyType({"items": (np.int64(2),)})})
+    assert _json_ready(value) == {"nested": {"items": [2]}}

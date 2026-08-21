@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import sys
@@ -21,6 +22,16 @@ from run_precomputed_experiment import (  # noqa: E402
     _predict_teacher_variants,
     preflight_experiment,
 )
+
+
+def _json_ready(value):
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def _macro_ap(logits: np.ndarray, targets: np.ndarray) -> float:
@@ -169,7 +180,7 @@ def main() -> None:
             "top_improvements": per_label[:10],
             "top_degradations": list(reversed(per_label[-10:])),
         },
-        "provenance": dict(plan.feature_artifact.metadata),
+        "provenance": _json_ready(plan.feature_artifact.metadata),
         "leakage_note": "Artifact provenance is reported, but absence of held-out-label leakage cannot be proven from embeddings alone.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
