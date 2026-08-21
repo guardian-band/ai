@@ -278,6 +278,13 @@ def test_run_model_id_rejects_spoofed_teacher_id_and_accepts_ordered_subset():
     assert _derive_run_model_id({"model_type": "multimodal_teacher", "enabled_modalities": []}) == "multimodal_teacher_morgan_only"
     with pytest.raises(ValueError, match="enabled_modalities"):
         _derive_run_model_id({"model_type": "multimodal_teacher", "enabled_modalities": ["kg", "molformer"]})
+    assert _derive_run_model_id(
+        {"model_type": "multimodal_teacher", "enabled_modalities": ["mpnn"], "experiment_tag": "gate_m2"}
+    ) == "multimodal_teacher_morgan_mpnn_gate_m2"
+    with pytest.raises(ValueError, match="experiment_tag"):
+        _derive_run_model_id(
+            {"model_type": "multimodal_teacher", "enabled_modalities": ["mpnn"], "experiment_tag": "../unsafe"}
+        )
 
 
 @pytest.mark.parametrize(

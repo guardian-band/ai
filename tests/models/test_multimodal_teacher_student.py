@@ -339,6 +339,19 @@ def test_teacher_resamples_each_auxiliary_modality_to_equal_summary_tokens_and_i
     )
 
 
+def test_teacher_accepts_a_less_restrictive_gate_initialization():
+    model = MultiModalTeacher(
+        morgan_dim=8, molformer_dim=6, mpnn_dim=7, kg_dim=5,
+        molformer_token_count=3, mpnn_token_count=4, kg_token_count=2,
+        hidden_dim=16, num_organ=2, num_specific=4, num_heads=4,
+        enabled_modalities=("mpnn",), modality_gate_init_logit=-2.0,
+    )
+    assert torch.allclose(
+        model.modality_gate_logits["mpnn"],
+        torch.full((2,), -2.0),
+    )
+
+
 def test_teacher_zero_auxiliary_gates_equal_morgan_baseline_exactly_and_swap_invariant():
     torch.manual_seed(101)
     model = MultiModalTeacher(

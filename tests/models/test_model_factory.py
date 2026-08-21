@@ -62,6 +62,7 @@ def test_multimodal_teacher_factory_passes_balanced_modality_controls():
         "modality_summary_token_count": 2,
         "modality_dropout": 0.2,
         "enabled_modalities": ["molformer", "kg"],
+        "modality_gate_init_logit": -2.0,
     }
 
     model = create_model(config, num_labels=4)
@@ -70,6 +71,7 @@ def test_multimodal_teacher_factory_passes_balanced_modality_controls():
     assert model.modality_summary_token_count == 2
     assert model.modality_dropout == 0.2
     assert model.enabled_modalities == ("molformer", "kg")
+    assert model.modality_gate_init_logit == -2.0
 
 
 @pytest.mark.parametrize(

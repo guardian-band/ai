@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Mapping, NamedTuple
 
 import torch
@@ -64,9 +65,15 @@ def derive_run_model_id(config: Mapping[str, Any]) -> str:
 
     model_type = config.get("model_type") if isinstance(config, Mapping) else None
     if model_type == "multimodal_teacher":
-        return _TEACHER_RUN_MODEL_IDS[
+        model_id = _TEACHER_RUN_MODEL_IDS[
             validate_enabled_modalities(config.get("enabled_modalities"))
         ]
+        tag = config.get("experiment_tag")
+        if tag is not None:
+            if not isinstance(tag, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", tag) is None:
+                raise ValueError("experiment_tag must use lowercase letters, digits, '_' or '-'")
+            model_id = f"{model_id}_{tag}"
+        return model_id
     if model_type == "distilled_pair_student":
         return "distilled_pair_student"
     if isinstance(model_type, str) and model_type:
@@ -319,6 +326,7 @@ def create_model(config: Mapping[str, Any], num_labels: int, input_dim: int = 76
             modality_summary_token_count=config.get("modality_summary_token_count", 4),
             modality_dropout=config.get("modality_dropout", 0.0),
             enabled_modalities=config.get("enabled_modalities"),
+            modality_gate_init_logit=config.get("modality_gate_init_logit", -4.0),
         )
     if model_type == "distilled_pair_student":
         from src.models.multimodal_teacher_student import DistilledPairStudent

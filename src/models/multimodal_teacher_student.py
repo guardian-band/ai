@@ -95,6 +95,7 @@ class MultiModalTeacher(nn.Module):
         modality_summary_token_count: int = 4,
         modality_dropout: float = 0.0,
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
+        modality_gate_init_logit: float = -4.0,
     ) -> None:
         super().__init__()
         morgan_dim = _positive_int(morgan_dim, "morgan_dim")
@@ -123,6 +124,11 @@ class MultiModalTeacher(nn.Module):
         modality_dropout = _validate_float(modality_dropout, "modality_dropout")
         if modality_dropout >= 1.0:
             raise ValueError("modality_dropout must be less than 1")
+        modality_gate_init_logit = _validate_float(
+            modality_gate_init_logit,
+            "modality_gate_init_logit",
+            minimum=-float("inf"),
+        )
 
         self.morgan_dim = morgan_dim
         self.molformer_dim = molformer_dim
@@ -139,6 +145,7 @@ class MultiModalTeacher(nn.Module):
         self.modality_summary_token_count = modality_summary_token_count
         self.modality_dropout = modality_dropout
         self.enabled_modalities = validate_enabled_modalities(enabled_modalities)
+        self.modality_gate_init_logit = modality_gate_init_logit
         self.training_stage = "fused"
         self.morgan_projection = nn.Sequential(
             nn.Linear(morgan_dim, hidden_dim), nn.LayerNorm(hidden_dim)
@@ -178,7 +185,7 @@ class MultiModalTeacher(nn.Module):
         )
         self.modality_gate_logits = nn.ParameterDict(
             {
-                name: nn.Parameter(torch.full((2,), -4.0))
+                name: nn.Parameter(torch.full((2,), modality_gate_init_logit))
                 for name in modality_dims
             }
         )

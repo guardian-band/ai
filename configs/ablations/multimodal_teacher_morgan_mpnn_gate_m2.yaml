@@ -1,4 +1,5 @@
 model_type: multimodal_teacher
+experiment_tag: gate_m2
 training_input_mode: precomputed_modalities
 morgan_dim: 2048
 molformer_dim: 768
@@ -13,7 +14,7 @@ dropout: 0.1
 modality_summary_token_count: 4
 modality_dropout: 0.1
 enabled_modalities: [mpnn]
-modality_gate_init_logit: -4.0
+modality_gate_init_logit: -2.0
 promotion_min_delta: 0.002
 cache_token_count: 8
 cache_token_dim: 128

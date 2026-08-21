@@ -859,6 +859,7 @@ def _train_teacher_stage(
     best_epoch = 0
     stale = 0
     epochs = int(config["epochs"])
+    epoch_history: list[dict[str, Any]] = []
     print(
         f"[training] model=teacher stage={stage} epochs={epochs} "
         f"patience={config['patience']} batches_per_epoch={len(loader)}",
@@ -901,12 +902,32 @@ def _train_teacher_stage(
             checkpoint_saved = True
         else:
             stale += 1
+        gate_values = {
+            name: torch.sigmoid(value).detach().cpu().tolist()
+            for name, value in model.modality_gate_logits.items()
+            if name in model.enabled_modalities
+        }
+        epoch_history.append(
+            {
+                "epoch": _epoch + 1,
+                "train_loss": epoch_loss_sum / epoch_example_count,
+                "validation_macro_ap": val_ap,
+                "best_validation_macro_ap": best_ap,
+                "patience": stale,
+                "gates": gate_values,
+            }
+        )
+        _atomic_write_json(
+            checkpoint_path.parent / f"training_metrics_{stage}.json",
+            {"stage": stage, "epochs": epoch_history},
+        )
         print(
             f"[epoch {_epoch + 1:02d}/{epochs:02d}] model=teacher stage={stage} "
             f"train_loss={epoch_loss_sum / epoch_example_count:.6f} "
             f"val_macro_auprc={val_ap:.6f} best_val_macro_auprc={best_ap:.6f} "
             f"patience={stale}/{config['patience']} "
-            f"checkpoint={'saved' if checkpoint_saved else 'kept'}",
+            f"checkpoint={'saved' if checkpoint_saved else 'kept'} "
+            f"gates={gate_values}",
             flush=True,
         )
         if stale >= int(config["patience"]):
