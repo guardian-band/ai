@@ -25,8 +25,10 @@ def main() -> None:
 
     scenario, seed = "cold_1", 42
     artifacts = ROOT / "artifacts"
+    # Dry-run also needs the already-completed source artifacts in order to
+    # validate every path and checkpoint without starting training.
+    _restore(args.source_backup)
     if not args.dry_run:
-        _restore(args.source_backup)
         _restore(args.drive_root / f"{scenario}_seed_{seed}")
 
     manifest = _required(
