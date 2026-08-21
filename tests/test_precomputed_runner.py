@@ -116,6 +116,18 @@ def test_precomputed_dry_run_performs_preflight_without_writing(tmp_path, monkey
     assert not (tmp_path / "artifacts" / "runs").exists()
 
 
+def test_preflight_seeds_model_initialization_from_manifest(tmp_path):
+    config, manifest = _fixture(tmp_path)
+    first = preflight_experiment(config, manifest)
+    torch.manual_seed(987654321)
+    second = preflight_experiment(config, manifest)
+
+    first_state = first.model.state_dict()
+    second_state = second.model.state_dict()
+    assert first_state.keys() == second_state.keys()
+    assert all(torch.equal(first_state[name], second_state[name]) for name in first_state)
+
+
 def test_preflight_validates_test_join_without_constructing_test_dataset(tmp_path):
     config, manifest = _fixture(tmp_path)
     manifest_payload = json.loads(manifest.read_text())

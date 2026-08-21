@@ -504,6 +504,10 @@ def preflight_experiment(
     config_path = Path(experiment_config_path).resolve()
     manifest_path = Path(manifest_path).resolve()
     manifest = verify_manifest(str(manifest_path))
+    # Model construction below initializes randomized parameters.  Seed before
+    # creating the model so runs carrying the same manifest seed start from the
+    # same weights instead of inheriting process-specific RNG state.
+    set_global_seed(int(manifest["seed"]))
     config = load_experiment_config(config_path)
     model_type = validate_model_type(config)
     derived_run_model_id = _derive_run_model_id(config)
@@ -1032,7 +1036,6 @@ def run_precomputed_experiment(
     plan = preflight_experiment(experiment_config_path, manifest_path)
     if dry_run:
         return plan
-    set_global_seed(int(plan.manifest["seed"]))
     device = choose_device()
     model = plan.model.to(device)
     student_mode = plan.config["model_type"] == "distilled_pair_student"
@@ -1071,7 +1074,14 @@ def run_precomputed_experiment(
             }
         )
     (run_dir / "config.resolved.json").write_text(json.dumps(resolved, indent=2))
-    train_loader = DataLoader(plan.train_dataset, batch_size=int(plan.config["batch_size"]), shuffle=not student_mode)
+    train_generator = torch.Generator()
+    train_generator.manual_seed(int(plan.manifest["seed"]))
+    train_loader = DataLoader(
+        plan.train_dataset,
+        batch_size=int(plan.config["batch_size"]),
+        shuffle=not student_mode,
+        generator=train_generator,
+    )
     validation_loader = DataLoader(plan.validation_dataset, batch_size=int(plan.config["batch_size"]))
     teacher_train_loader = (
         DataLoader(plan.teacher_train_dataset, batch_size=int(plan.config["batch_size"]))
