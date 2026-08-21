@@ -29,6 +29,7 @@ VARIANTS = (
     "multimodal_teacher_morgan_mpnn",
     "multimodal_teacher_morgan_hgt",
 )
+OPTIONAL_VARIANTS = VARIANTS[1:]
 
 
 def _python(entrypoint: str, *args: str) -> list[str]:
@@ -84,7 +85,9 @@ def _required(path: Path, label: str) -> Path:
     return path
 
 
-def _run_seed(seed: int, drive_root: Path, dry_run: bool) -> list[Path]:
+def _run_seed(
+    seed: int, drive_root: Path, dry_run: bool, variants: tuple[str, ...]
+) -> list[Path]:
     artifacts = ROOT / "artifacts"
     backup = drive_root / f"warm_pair_seed_{seed}"
     if not dry_run:
@@ -112,49 +115,74 @@ def _run_seed(seed: int, drive_root: Path, dry_run: bool) -> list[Path]:
     hgt = artifacts / "features" / f"hgt_warm_pair_seed_{seed}.npz"
     features = artifacts / "features" / f"advanced_warm_pair_seed_{seed}.npz"
 
-    _run_stage(
-        label="hgt",
-        command=_python(
-            "scripts/train_primekg_hgt.py",
-            "--primekg", "data/processed/colab_primekg_safe.parquet",
-            "--morgan", "artifacts/morgan_fingerprints.parquet",
-            "--manifest", str(manifest),
-            "--checkpoint", str(hgt_checkpoint),
-            "--output", str(hgt),
-            "--hidden-dim", "128",
-            "--batch-size", "1024",
-            "--num-neighbors", "5", "3", "2",
-            "--epochs", "5",
-            "--max-train-edges-per-relation", "5000",
-            "--max-validation-edges-per-relation", "1000",
-            "--seed", str(seed),
-            "--device", "cuda",
-        ),
-        outputs=[
-            hgt_checkpoint,
-            hgt_checkpoint.with_name(f"{hgt_checkpoint.name}.sha256"),
-            hgt_checkpoint.with_name(f"{hgt_checkpoint.name}.training_metrics.json"),
-            hgt_checkpoint.with_name(
-                f"{hgt_checkpoint.name}.training_metrics.json.sha256"
+    if "multimodal_teacher_morgan_hgt" in variants:
+        _run_stage(
+            label="hgt",
+            command=_python(
+                "scripts/train_primekg_hgt.py",
+                "--primekg",
+                "data/processed/colab_primekg_safe.parquet",
+                "--morgan",
+                "artifacts/morgan_fingerprints.parquet",
+                "--manifest",
+                str(manifest),
+                "--checkpoint",
+                str(hgt_checkpoint),
+                "--output",
+                str(hgt),
+                "--hidden-dim",
+                "128",
+                "--batch-size",
+                "1024",
+                "--num-neighbors",
+                "5",
+                "3",
+                "2",
+                "--epochs",
+                "5",
+                "--max-train-edges-per-relation",
+                "5000",
+                "--max-validation-edges-per-relation",
+                "1000",
+                "--seed",
+                str(seed),
+                "--device",
+                "cuda",
             ),
-            hgt,
-            hgt.with_suffix(hgt.suffix + ".sha256"),
-        ],
-        backup=backup,
-        seed=seed,
-        dry_run=dry_run,
+            outputs=[
+                hgt_checkpoint,
+                hgt_checkpoint.with_name(f"{hgt_checkpoint.name}.sha256"),
+                hgt_checkpoint.with_name(
+                    f"{hgt_checkpoint.name}.training_metrics.json"
+                ),
+                hgt_checkpoint.with_name(
+                    f"{hgt_checkpoint.name}.training_metrics.json.sha256"
+                ),
+                hgt,
+                hgt.with_suffix(hgt.suffix + ".sha256"),
+            ],
+            backup=backup,
+            seed=seed,
+            dry_run=dry_run,
+        )
+    assemble_command = _python(
+        "build_advanced_features.py",
+        "--manifest",
+        str(manifest),
+        "--morgan",
+        "artifacts/morgan_fingerprints.parquet",
+        "--molformer",
+        str(molformer),
+        "--mpnn",
+        str(mpnn),
+        "--output",
+        str(features),
     )
+    if "multimodal_teacher_morgan_hgt" in variants:
+        assemble_command.extend(["--kg", str(hgt)])
     _run_stage(
         label="assemble",
-        command=_python(
-            "build_advanced_features.py",
-            "--manifest", str(manifest),
-            "--morgan", "artifacts/morgan_fingerprints.parquet",
-            "--molformer", str(molformer),
-            "--mpnn", str(mpnn),
-            "--kg", str(hgt),
-            "--output", str(features),
-        ),
+        command=assemble_command,
         outputs=[features, features.with_suffix(features.suffix + ".sha256")],
         backup=backup,
         seed=seed,
@@ -163,7 +191,7 @@ def _run_seed(seed: int, drive_root: Path, dry_run: bool) -> list[Path]:
 
     completed_runs: list[Path] = []
     shared_baseline: Path | None = None
-    for variant in VARIANTS:
+    for variant in (VARIANTS[0], *variants):
         template = ROOT / "configs/ablations" / f"{variant}.yaml"
         config = artifacts / "configs" / f"{variant}_warm_pair_seed_{seed}.yaml"
         run_dir = artifacts / "runs" / (
@@ -212,17 +240,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--drive-root", type=Path, required=True)
     parser.add_argument("--seeds", nargs="+", type=int, default=[101, 2024])
+    parser.add_argument(
+        "--variants",
+        nargs="+",
+        choices=OPTIONAL_VARIANTS,
+        default=list(OPTIONAL_VARIANTS),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if not args.seeds or len(set(args.seeds)) != len(args.seeds):
         raise ValueError("seeds must be a non-empty unique list")
+    variants = tuple(dict.fromkeys(args.variants))
 
     print("WARM-PAIR SHARED-BASELINE RACE", flush=True)
     print(f"Seeds: {args.seeds}", flush=True)
-    print("Models: Morgan-only, Morgan+MPNN, Morgan+HGT", flush=True)
+    print(f"Models: Morgan-only, {', '.join(variants)}", flush=True)
     all_runs: list[Path] = []
     for seed in args.seeds:
-        all_runs.extend(_run_seed(seed, args.drive_root, args.dry_run))
+        all_runs.extend(_run_seed(seed, args.drive_root, args.dry_run, variants))
     if args.dry_run:
         return
 
@@ -241,8 +276,7 @@ def main() -> None:
             "--scenario", "warm_pair",
             "--seeds", *(str(seed) for seed in args.seeds),
             "--variants",
-            "multimodal_teacher_morgan_mpnn",
-            "multimodal_teacher_morgan_hgt",
+            *variants,
         ),
         "aggregate_shared_baseline_race",
         False,

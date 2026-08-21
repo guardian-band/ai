@@ -69,3 +69,26 @@ def test_assembler_fails_closed_on_any_missing_drug(tmp_path):
             },
         )
 
+
+def test_assembler_marks_omitted_kg_as_unavailable(tmp_path):
+    molformer = _tokens(tmp_path, "molformer", ["D1", "D2"], 3)
+    mpnn = _tokens(tmp_path, "mpnn", ["D1", "D2"], 4)
+    artifact = assemble_multimodal_features(
+        tmp_path / "advanced.npz",
+        required_drug_ids=["D1", "D2"],
+        morgan_drug_ids=["D1", "D2"],
+        morgan=np.ones((2, 4), dtype=np.float32),
+        molformer=molformer,
+        mpnn=mpnn,
+        kg=None,
+        morgan_provenance_hash=HASH_A,
+        manifest_compatibility={
+            "benchmark_id": "fixture",
+            "scenario": "warm_pair",
+            "seed": 27182,
+            "manifest_hash": "manifest27182",
+        },
+    )
+    assert artifact.kg_tokens.shape == (2, 1, 1)
+    assert not artifact.kg_available.any()
+    assert artifact.kg_padding_mask.all()

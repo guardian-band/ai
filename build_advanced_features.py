@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--morgan", type=Path, required=True)
     parser.add_argument("--molformer", type=Path, required=True)
     parser.add_argument("--mpnn", type=Path, required=True)
-    parser.add_argument("--kg", type=Path, required=True)
+    parser.add_argument("--kg", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--drug-id-column", default="drugbank_id")
     parser.add_argument("--morgan-column", default="morgan_fingerprint")
@@ -58,7 +58,7 @@ def main() -> None:
         morgan=morgan,
         molformer=TokenFeatureArtifact.load(args.molformer),
         mpnn=TokenFeatureArtifact.load(args.mpnn),
-        kg=TokenFeatureArtifact.load(args.kg),
+        kg=None if args.kg is None else TokenFeatureArtifact.load(args.kg),
         morgan_provenance_hash=hashlib.sha256(args.morgan.read_bytes()).hexdigest(),
         manifest_compatibility={
             "benchmark_id": manifest["benchmark_id"],

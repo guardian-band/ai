@@ -29,7 +29,7 @@ def assemble_multimodal_features(
     morgan: np.ndarray,
     molformer: TokenFeatureArtifact,
     mpnn: TokenFeatureArtifact,
-    kg: TokenFeatureArtifact,
+    kg: TokenFeatureArtifact | None,
     morgan_provenance_hash: str,
     manifest_compatibility: Mapping[str, object],
 ) -> MultimodalFeatureArtifact:
@@ -55,28 +55,37 @@ def assemble_multimodal_features(
     morgan_index = _indices(required, morgan_ids, "morgan")
     molformer_index = _indices(required, molformer.drug_ids, "molformer")
     mpnn_index = _indices(required, mpnn.drug_ids, "mpnn")
-    kg_index = _indices(required, kg.drug_ids, "kg")
     count = len(required)
+    if kg is None:
+        kg_tokens = np.zeros((count, 1, 1), dtype=np.float32)
+        kg_available = np.zeros(count, dtype=bool)
+        kg_padding_mask = np.ones((count, 1), dtype=bool)
+        kg_provenance_hash = "0" * 64
+    else:
+        kg_index = _indices(required, kg.drug_ids, "kg")
+        kg_tokens = np.ascontiguousarray(kg.tokens[kg_index])
+        kg_available = np.ascontiguousarray(kg.available[kg_index])
+        kg_padding_mask = np.ascontiguousarray(kg.padding_mask[kg_index])
+        kg_provenance_hash = kg.provenance_sha256
     return MultimodalFeatureArtifact.write(
         output_path,
         drug_ids=required,
         morgan=np.ascontiguousarray(morgan_values[morgan_index]),
         molformer_tokens=np.ascontiguousarray(molformer.tokens[molformer_index]),
         mpnn_tokens=np.ascontiguousarray(mpnn.tokens[mpnn_index]),
-        kg_tokens=np.ascontiguousarray(kg.tokens[kg_index]),
+        kg_tokens=kg_tokens,
         morgan_available=np.ones(count, dtype=bool),
         molformer_available=np.ascontiguousarray(molformer.available[molformer_index]),
         mpnn_available=np.ascontiguousarray(mpnn.available[mpnn_index]),
-        kg_available=np.ascontiguousarray(kg.available[kg_index]),
+        kg_available=kg_available,
         molformer_padding_mask=np.ascontiguousarray(
             molformer.padding_mask[molformer_index]
         ),
         mpnn_padding_mask=np.ascontiguousarray(mpnn.padding_mask[mpnn_index]),
-        kg_padding_mask=np.ascontiguousarray(kg.padding_mask[kg_index]),
+        kg_padding_mask=kg_padding_mask,
         morgan_provenance_hash=morgan_provenance_hash,
         molformer_provenance_hash=molformer.provenance_sha256,
         mpnn_provenance_hash=mpnn.provenance_sha256,
-        kg_provenance_hash=kg.provenance_sha256,
+        kg_provenance_hash=kg_provenance_hash,
         manifest_compatibility=manifest_compatibility,
     )
-
