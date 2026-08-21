@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher-config", type=Path)
     parser.add_argument("--teacher-checkpoint", type=Path)
     parser.add_argument("--teacher-selection", type=Path)
+    parser.add_argument("--baseline-checkpoint", type=Path)
     return parser.parse_args()
 
 
@@ -108,6 +109,14 @@ def main() -> None:
                 "feature_artifact_sha256": _hash(args.features),
             }
         )
+        if args.baseline_checkpoint is not None:
+            baseline_checkpoint = args.baseline_checkpoint.resolve()
+            if not baseline_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"shared baseline checkpoint does not exist: {baseline_checkpoint}"
+                )
+            payload["shared_baseline_checkpoint_path"] = str(baseline_checkpoint)
+            payload["shared_baseline_checkpoint_sha256"] = _hash(baseline_checkpoint)
     else:
         missing = [
             name

@@ -242,14 +242,22 @@ def main() -> None:
             raise ValueError(f"ablation template/model ID mismatch: {variant}")
         config = artifacts / "configs" / f"{variant}_warm_pair_seed_42.yaml"
         run_dir = artifacts / "runs" / f"{variant}__warm_pair__seed_42__{manifest_hash}"
+        configure_command = _python(
+            "configure_advanced_experiment.py", "--model", "teacher",
+            "--template", str(template), "--manifest", str(manifest),
+            "--features", str(features), "--hierarchy", str(hierarchy),
+            "--output", str(config),
+        )
+        if variant != "multimodal_teacher_morgan_only":
+            shared_baseline = artifacts / "runs" / (
+                f"multimodal_teacher_morgan_only__warm_pair__seed_42__{manifest_hash}"
+            ) / "checkpoint_baseline.pt"
+            configure_command.extend(
+                ["--baseline-checkpoint", str(shared_baseline)]
+            )
         _run_stage(
             label=f"config_{variant}",
-            command=_python(
-                "configure_advanced_experiment.py", "--model", "teacher",
-                "--template", str(template), "--manifest", str(manifest),
-                "--features", str(features), "--hierarchy", str(hierarchy),
-                "--output", str(config),
-            ),
+            command=configure_command,
             outputs=[config], backup=backup, dry_run=args.dry_run,
         )
         _run_stage(

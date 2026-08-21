@@ -31,6 +31,7 @@ from run_precomputed_experiment import (
     _assert_batch_alignment,
     _validate_student_teacher_ap,
     _derive_run_model_id,
+    _load_shared_baseline_parameters,
 )
 
 
@@ -126,6 +127,35 @@ def test_preflight_seeds_model_initialization_from_manifest(tmp_path):
     second_state = second.model.state_dict()
     assert first_state.keys() == second_state.keys()
     assert all(torch.equal(first_state[name], second_state[name]) for name in first_state)
+
+
+def test_shared_baseline_loads_only_morgan_parameters(tmp_path):
+    config, manifest = _fixture(tmp_path)
+    source = preflight_experiment(config, manifest).model
+    target = preflight_experiment(config, manifest).model
+    source_state = source.state_dict()
+    baseline_ids = {id(parameter) for parameter in source.baseline_parameters()}
+    baseline_names = {
+        name for name, parameter in source.named_parameters() if id(parameter) in baseline_ids
+    }
+    checkpoint = tmp_path / "shared_baseline.pt"
+    torch.save(source_state, checkpoint)
+
+    with torch.no_grad():
+        for parameter in target.parameters():
+            parameter.add_(1.0)
+    auxiliary_before = {
+        name: value.clone()
+        for name, value in target.state_dict().items()
+        if name not in baseline_names
+    }
+    _load_shared_baseline_parameters(target, checkpoint, torch.device("cpu"))
+    target_state = target.state_dict()
+
+    assert all(torch.equal(target_state[name], source_state[name]) for name in baseline_names)
+    assert all(
+        torch.equal(target_state[name], value) for name, value in auxiliary_before.items()
+    )
 
 
 def test_preflight_validates_test_join_without_constructing_test_dataset(tmp_path):

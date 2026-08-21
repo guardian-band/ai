@@ -552,6 +552,18 @@ def preflight_experiment(
             raise ValueError("model num_organ does not match hierarchy organ_order")
         _validate_validation_support(validation)
         source_hashes.update(hashes)
+        shared_baseline = config.get("shared_baseline_checkpoint_path")
+        if shared_baseline is not None:
+            shared_baseline_path = _required_path(
+                config_path, config, "shared_baseline_checkpoint_path"
+            )
+            shared_baseline_hash = _required_hash(
+                config, "shared_baseline_checkpoint_sha256"
+            )
+            _verify_source(
+                shared_baseline_path, shared_baseline_hash, "shared baseline checkpoint"
+            )
+            source_hashes["shared_baseline_checkpoint"] = shared_baseline_hash
         return PreflightPlan(
             config_path, config, manifest_path, manifest, hierarchy, model, train, validation,
             feature_artifact=feature, source_hashes=source_hashes,
@@ -953,6 +965,31 @@ def _build_teacher_selection(
     return selection, selected_mode
 
 
+def _load_shared_baseline_parameters(
+    model: nn.Module, checkpoint_path: Path, device: torch.device
+) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("shared baseline checkpoint must contain a state-dict mapping")
+    baseline_ids = {id(parameter) for parameter in model.baseline_parameters()}
+    baseline_names = {
+        name for name, parameter in model.named_parameters() if id(parameter) in baseline_ids
+    }
+    model_state = model.state_dict()
+    missing = sorted(name for name in baseline_names if name not in checkpoint)
+    mismatched = sorted(
+        name
+        for name in baseline_names
+        if name in checkpoint and checkpoint[name].shape != model_state[name].shape
+    )
+    if missing or mismatched:
+        raise ValueError(
+            "shared baseline checkpoint is incompatible; "
+            f"missing={missing}, shape_mismatch={mismatched}"
+        )
+    model.load_state_dict({name: checkpoint[name] for name in baseline_names}, strict=False)
+
+
 def _train_teacher_two_stage(
     model: nn.Module,
     train_loader: DataLoader,
@@ -965,10 +1002,28 @@ def _train_teacher_two_stage(
     baseline_checkpoint = run_dir / "checkpoint_baseline.pt"
     fused_checkpoint = run_dir / "checkpoint_fused.pt"
     model.unfreeze_baseline()
-    baseline_ap = _train_teacher_stage(
-        model, train_loader, validation_loader, device, config, hierarchy_loss,
-        "baseline", baseline_checkpoint,
-    )
+    shared_baseline = config.get("shared_baseline_checkpoint_path")
+    if shared_baseline is None:
+        baseline_ap = _train_teacher_stage(
+            model, train_loader, validation_loader, device, config, hierarchy_loss,
+            "baseline", baseline_checkpoint,
+        )
+    else:
+        shared_path = Path(str(shared_baseline))
+        if not shared_path.is_absolute():
+            raise ValueError("shared_baseline_checkpoint_path must be absolute")
+        _load_shared_baseline_parameters(model, shared_path, device)
+        model.set_training_stage("baseline")
+        baseline_logits, baseline_targets = _predict(model, validation_loader, device, False)
+        baseline_ap = _require_defined_macro_ap(
+            _macro_ap(baseline_logits, baseline_targets)
+        )
+        torch.save(model.state_dict(), baseline_checkpoint)
+        print(
+            f"[shared-baseline] checkpoint={shared_path} "
+            f"val_macro_auprc={baseline_ap:.6f}",
+            flush=True,
+        )
     model.load_state_dict(torch.load(baseline_checkpoint, map_location=device, weights_only=True))
     model.set_training_stage("baseline")
     if not getattr(model, "enabled_modalities", ()):

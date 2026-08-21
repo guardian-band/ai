@@ -93,6 +93,7 @@ def _comparison_csv_rows(comparison: Mapping[str, Any], scenario: str) -> list[d
     metrics = comparison["metrics"]
     rows: list[dict[str, Any]] = []
     for pair in comparison["pairs"]:
+        selection = comparison["teacher_selection_by_seed"].get(str(pair["seed"]))
         rows.append(
             {
                 "row_type": "per_seed",
@@ -105,6 +106,7 @@ def _comparison_csv_rows(comparison: Mapping[str, Any], scenario: str) -> list[d
                 "morgan_micro_ap": pair["morgan_micro_ap"],
                 "advanced_micro_ap": pair["advanced_micro_ap"],
                 "delta_micro_ap": pair["delta_micro_ap"],
+                "teacher_selected_mode": selection,
             }
         )
     rows.append(
@@ -181,13 +183,31 @@ def aggregate_ablations(
             run_model_id=variant,
         )
         comparison_records = baseline_records + variant_records
-        comparisons.append(
-            _paired_ablation_comparison(
-                comparison_records,
-                {"resamples": 2000, "seed": 8675309, "confidence_level": 0.95},
-                advanced_model_id=variant,
-            )
+        comparison = _paired_ablation_comparison(
+            comparison_records,
+            {"resamples": 2000, "seed": 8675309, "confidence_level": 0.95},
+            advanced_model_id=variant,
         )
+        selection_by_seed = {
+            str(record["config"]["seed"]): record["config"].get(
+                "teacher_selected_mode"
+            )
+            for record in variant_records
+        }
+        invalid_modes = {
+            seed: mode
+            for seed, mode in selection_by_seed.items()
+            if mode not in {"baseline", "fused"}
+        }
+        if invalid_modes:
+            raise ValueError(
+                f"missing or invalid teacher selection modes for {variant}: {invalid_modes}"
+            )
+        comparison["teacher_selection_by_seed"] = selection_by_seed
+        comparison["all_seeds_selected_fused"] = all(
+            mode == "fused" for mode in selection_by_seed.values()
+        )
+        comparisons.append(comparison)
     output = {
         "schema_version": 1,
         "scenario": scenario,

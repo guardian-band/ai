@@ -112,6 +112,11 @@ def _write_ablation_run(runs_dir: Path, *, run_model_id: str, scenario: str, see
                 "multimodal_teacher_full": ["molformer", "mpnn", "kg"],
             }[run_model_id],
             "labels_order_sha256": label_hash,
+            "teacher_selected_mode": (
+                "baseline"
+                if run_model_id == "multimodal_teacher_morgan_only"
+                else "fused"
+            ),
         }
     )
     (run_dir / "config.resolved.json").write_text(json.dumps(config))
@@ -302,6 +307,8 @@ def test_staged_ablation_aggregation_supports_one_seed_42(tmp_path):
     assert result["expected_seeds"] == [42]
     assert result["comparisons"][0]["metrics"]["macro_ap"]["std"] is None
     assert len(result["comparisons"][0]["pairs"]) == 1
+    assert result["comparisons"][0]["all_seeds_selected_fused"] is True
+    assert result["comparisons"][0]["teacher_selection_by_seed"] == {"42": "fused"}
 
 
 def test_staged_ablation_aggregation_supports_five_seed_warm_pair_and_discovers_variants(tmp_path):
