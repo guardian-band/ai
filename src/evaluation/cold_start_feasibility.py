@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -74,42 +74,71 @@ def audit_safe_paths(
     if max_hops != 3:
         raise ValueError("the audited protocol is fixed to max_hops=3")
     safe, rejected = _safe_primekg(primekg, set(map(str, target_label_ids)))
-    adjacency: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = defaultdict(list)
+    adjacency: dict[tuple[str, str], dict[tuple[str, str], str]] = defaultdict(dict)
     drug_nodes: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for row in safe.itertuples(index=False):
         left = (str(row.x_type), str(row.x_id))
         right = (str(row.y_type), str(row.y_id))
         relation = str(row.relation)
-        adjacency[left].append((right, relation))
-        adjacency[right].append((left, relation))
+        adjacency[left].setdefault(right, relation)
+        adjacency[right].setdefault(left, relation)
         if "drug" in left[0]:
             drug_nodes[left[1]].add(left)
         if "drug" in right[0]:
             drug_nodes[right[1]].add(right)
 
     selected = pairs[pairs["split"].isin(splits)].copy()
-    starts = sorted(set(selected["drug_a"].astype(str)) | set(selected["drug_b"].astype(str)))
-    reach: dict[str, dict[str, tuple[int, tuple[str, ...], tuple[str, ...]]]] = {}
-    for drug_id in starts:
-        found: dict[str, tuple[int, tuple[str, ...], tuple[str, ...]]] = {}
-        queue = deque((node, 0, (), ()) for node in sorted(drug_nodes.get(drug_id, ())))
-        visited = {node: 0 for node in drug_nodes.get(drug_id, ())}
-        while queue:
-            node, depth, relations, intermediates = queue.popleft()
-            if depth >= max_hops:
+    first_hop = {
+        drug_id: {
+            neighbor: relation
+            for node in nodes
+            for neighbor, relation in adjacency.get(node, {}).items()
+        }
+        for drug_id, nodes in drug_nodes.items()
+    }
+
+    def shortest_path(left_id: str, right_id: str):
+        """Targeted <=3-hop search without expanding the whole three-hop ball."""
+
+        left_nodes = drug_nodes.get(left_id, set())
+        right_nodes = drug_nodes.get(right_id, set())
+        for left_node in left_nodes:
+            for right_node in right_nodes:
+                relation = adjacency.get(left_node, {}).get(right_node)
+                if relation is not None:
+                    return 1, (relation,), ()
+
+        left_neighbors = first_hop.get(left_id, {})
+        right_neighbors = first_hop.get(right_id, {})
+        common = left_neighbors.keys() & right_neighbors.keys()
+        if common:
+            middle = min(common)
+            return (
+                2,
+                (left_neighbors[middle], right_neighbors[middle]),
+                (middle[0],),
+            )
+
+        # A 3-hop path exists iff an edge joins a first-hop neighbor of each drug.
+        # Iterate the lower-degree frontier to reduce work on hub-heavy PrimeKG.
+        if len(left_neighbors) <= len(right_neighbors):
+            outer, target = left_neighbors, right_neighbors
+            reverse = False
+        else:
+            outer, target = right_neighbors, left_neighbors
+            reverse = True
+        target_nodes = target.keys()
+        for first, edge_one in outer.items():
+            bridge_candidates = adjacency.get(first, {}).keys() & target_nodes
+            if not bridge_candidates:
                 continue
-            for neighbor, relation in adjacency.get(node, ()):
-                next_depth = depth + 1
-                old_depth = visited.get(neighbor)
-                if old_depth is not None and old_depth <= next_depth:
-                    continue
-                visited[neighbor] = next_depth
-                next_relations = relations + (relation,)
-                next_intermediates = intermediates + (() if next_depth == max_hops else (neighbor[0],))
-                if "drug" in neighbor[0] and neighbor[1] != drug_id:
-                    found.setdefault(neighbor[1], (next_depth, next_relations, next_intermediates))
-                queue.append((neighbor, next_depth, next_relations, next_intermediates))
-        reach[drug_id] = found
+            second = min(bridge_candidates)
+            edge_two = adjacency[first][second]
+            edge_three = target[second]
+            if reverse:
+                return 3, (edge_three, edge_two, edge_one), (second[0], first[0])
+            return 3, (edge_one, edge_two, edge_three), (first[0], second[0])
+        return None
 
     by_split: dict[str, Any] = {}
     for split in splits:
@@ -118,7 +147,7 @@ def audit_safe_paths(
         relations = Counter()
         intermediate_types = Counter()
         for row in subset.itertuples(index=False):
-            result = reach.get(str(row.drug_a), {}).get(str(row.drug_b))
+            result = shortest_path(str(row.drug_a), str(row.drug_b))
             if result is None:
                 hops["disconnected"] += 1
                 continue
