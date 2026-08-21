@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 
+import pandas as pd
 import yaml
 
 
@@ -24,6 +25,7 @@ from scripts.run_advanced_colab_sweep import (  # noqa: E402
     _restore,
     ensure_manifest_hierarchy,
 )
+from src.models.molecular_mpnn import featurize_smiles  # noqa: E402
 from src.models.factory import derive_run_model_id  # noqa: E402
 
 
@@ -82,6 +84,44 @@ def _python(entrypoint: str, *args: str) -> list[str]:
     return [sys.executable, "-u", str(ROOT / entrypoint), *args]
 
 
+def _prepare_required_drugs(manifest: Path, output: Path) -> int:
+    """Write the exact benchmark drug cohort and return its maximum atom count."""
+
+    payload = json.loads(manifest.read_text())
+    pairs_path = Path(str(payload["pairs_path"]))
+    if not pairs_path.is_absolute():
+        pairs_path = manifest.parent / pairs_path
+    pairs = pd.read_parquet(pairs_path)
+    required_ids = set(pairs["drug_a"].astype(str)) | set(pairs["drug_b"].astype(str))
+    master = pd.read_csv(ROOT / "data/raw/drugs_master.csv")
+    master["drugbank_id"] = master["drugbank_id"].astype(str)
+    selected = master[master["drugbank_id"].isin(required_ids)].copy()
+    present = set(selected["drugbank_id"])
+    missing = sorted(required_ids - present)
+    if missing:
+        raise ValueError(f"benchmark drugs are missing from drugs_master.csv: {missing}")
+    selected = selected.sort_values("drugbank_id").reset_index(drop=True)
+    maximum = 0
+    valid = 0
+    for value in selected["smiles"].tolist():
+        try:
+            graph = featurize_smiles(value)
+        except ValueError:
+            continue
+        maximum = max(maximum, int(graph.atom_features.shape[0]))
+        valid += 1
+    if maximum <= 0:
+        raise ValueError("benchmark cohort contains no valid molecular graphs")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    selected.to_csv(output, index=False)
+    print(
+        f"MPNN cohort: required_drugs={len(required_ids)} valid_smiles={valid} "
+        f"lossless_token_count={maximum}",
+        flush=True,
+    )
+    return maximum
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--drive-root", type=Path, required=True)
@@ -105,9 +145,11 @@ def main() -> None:
     if not args.dry_run:
         ensure_manifest_hierarchy(hierarchy, manifest)
 
+    required_drugs = artifacts / "inputs/drugs_warm_pair_seed_42.csv"
+    mpnn_token_count = _prepare_required_drugs(manifest, required_drugs)
     molformer = artifacts / "features/molformer_tokens.npz"
-    mpnn_checkpoint = artifacts / "checkpoints/molecular_mpnn.pt"
-    mpnn = artifacts / "features/mpnn_tokens.npz"
+    mpnn_checkpoint = artifacts / "checkpoints/molecular_mpnn_warm_pair_seed_42_lossless.pt"
+    mpnn = artifacts / "features/mpnn_warm_pair_seed_42_lossless.npz"
     hgt_checkpoint = artifacts / "checkpoints/hgt_warm_pair_seed_42.pt"
     hgt = artifacts / "features/hgt_warm_pair_seed_42.npz"
     features = artifacts / "features/advanced_warm_pair_seed_42.npz"
@@ -125,11 +167,12 @@ def main() -> None:
             [molformer, molformer.with_suffix(molformer.suffix + ".sha256")],
         ),
         (
-            "mpnn_train",
+            "mpnn_train_lossless",
             _python(
                 "scripts/train_molecular_mpnn.py",
                 "--input", "data/raw/drugs_master.csv",
                 "--checkpoint", str(mpnn_checkpoint), "--device", "cuda",
+                "--token-count", str(mpnn_token_count),
             ),
             [
                 mpnn_checkpoint,
@@ -137,14 +180,18 @@ def main() -> None:
             ],
         ),
         (
-            "mpnn_export",
+            "mpnn_export_required_lossless",
             _python(
                 "scripts/export_molecular_mpnn_tokens.py",
-                "--input", "data/raw/drugs_master.csv",
+                "--input", str(required_drugs),
                 "--checkpoint", str(mpnn_checkpoint),
                 "--output", str(mpnn), "--device", "cuda",
             ),
-            [mpnn, mpnn.with_suffix(mpnn.suffix + ".sha256")],
+            [
+                required_drugs,
+                mpnn,
+                mpnn.with_suffix(mpnn.suffix + ".sha256"),
+            ],
         ),
         (
             "hgt",
