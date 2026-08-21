@@ -63,20 +63,21 @@ def _run_stage(
     command: list[str],
     outputs: list[Path],
     backup: Path,
+    scenario: str,
     seed: int,
     dry_run: bool,
 ) -> None:
     marker = backup / "markers" / f"{label}.complete.json"
     if not dry_run and _marker_valid(marker):
-        print(f"SKIP verified: warm_pair/seed_{seed}/{label}", flush=True)
+        print(f"SKIP verified: {scenario}/seed_{seed}/{label}", flush=True)
         return
-    _run_live(command, f"warm_pair/seed_{seed}/{label}", dry_run)
+    _run_live(command, f"{scenario}/seed_{seed}/{label}", dry_run)
     if dry_run:
         return
-    _backup_stage(backup, marker, outputs, "warm_pair", seed, label)
+    _backup_stage(backup, marker, outputs, scenario, seed, label)
     if not _marker_valid(marker):
         raise RuntimeError(f"Drive backup verification failed: {label}")
-    print(f"SAVED+VERIFIED: warm_pair/seed_{seed}/{label}", flush=True)
+    print(f"SAVED+VERIFIED: {scenario}/seed_{seed}/{label}", flush=True)
 
 
 def _required(path: Path, label: str) -> Path:
@@ -86,15 +87,19 @@ def _required(path: Path, label: str) -> Path:
 
 
 def _run_seed(
-    seed: int, drive_root: Path, dry_run: bool, variants: tuple[str, ...]
+    scenario: str,
+    seed: int,
+    drive_root: Path,
+    dry_run: bool,
+    variants: tuple[str, ...],
 ) -> list[Path]:
     artifacts = ROOT / "artifacts"
-    backup = drive_root / f"warm_pair_seed_{seed}"
+    backup = drive_root / f"{scenario}_seed_{seed}"
     if not dry_run:
         _restore(backup)
 
     manifest = artifacts / (
-        f"benchmarks/polypharmacy_v2/warm_pair/seed_{seed}/manifest.json"
+        f"benchmarks/polypharmacy_v2/{scenario}/seed_{seed}/manifest.json"
     )
     hierarchy = artifacts / "meddra_hierarchy.json"
     _required(manifest, "benchmark manifest")
@@ -111,9 +116,9 @@ def _run_seed(
         artifacts / "features/mpnn_warm_pair_seed_42_lossless.npz",
         "lossless MPNN features",
     )
-    hgt_checkpoint = artifacts / "checkpoints" / f"hgt_warm_pair_seed_{seed}.pt"
-    hgt = artifacts / "features" / f"hgt_warm_pair_seed_{seed}.npz"
-    features = artifacts / "features" / f"advanced_warm_pair_seed_{seed}.npz"
+    hgt_checkpoint = artifacts / "checkpoints" / f"hgt_{scenario}_seed_{seed}.pt"
+    hgt = artifacts / "features" / f"hgt_{scenario}_seed_{seed}.npz"
+    features = artifacts / "features" / f"advanced_{scenario}_seed_{seed}.npz"
 
     if "multimodal_teacher_morgan_hgt" in variants:
         _run_stage(
@@ -162,6 +167,7 @@ def _run_seed(
                 hgt.with_suffix(hgt.suffix + ".sha256"),
             ],
             backup=backup,
+            scenario=scenario,
             seed=seed,
             dry_run=dry_run,
         )
@@ -185,6 +191,7 @@ def _run_seed(
         command=assemble_command,
         outputs=[features, features.with_suffix(features.suffix + ".sha256")],
         backup=backup,
+        scenario=scenario,
         seed=seed,
         dry_run=dry_run,
     )
@@ -193,9 +200,9 @@ def _run_seed(
     shared_baseline: Path | None = None
     for variant in (VARIANTS[0], *variants):
         template = ROOT / "configs/ablations" / f"{variant}.yaml"
-        config = artifacts / "configs" / f"{variant}_warm_pair_seed_{seed}.yaml"
+        config = artifacts / "configs" / f"{variant}_{scenario}_seed_{seed}.yaml"
         run_dir = artifacts / "runs" / (
-            f"{variant}__warm_pair__seed_{seed}__{manifest_hash}"
+            f"{variant}__{scenario}__seed_{seed}__{manifest_hash}"
         )
         configure = _python(
             "configure_advanced_experiment.py",
@@ -213,6 +220,7 @@ def _run_seed(
             command=configure,
             outputs=[config],
             backup=backup,
+            scenario=scenario,
             seed=seed,
             dry_run=dry_run,
         )
@@ -225,6 +233,7 @@ def _run_seed(
             ),
             outputs=[run_dir],
             backup=backup,
+            scenario=scenario,
             seed=seed,
             dry_run=dry_run,
         )
@@ -239,6 +248,9 @@ def _run_seed(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--drive-root", type=Path, required=True)
+    parser.add_argument(
+        "--scenario", choices=("warm_pair", "cold_1"), default="warm_pair"
+    )
     parser.add_argument("--seeds", nargs="+", type=int, default=[101, 2024])
     parser.add_argument(
         "--variants",
@@ -252,28 +264,35 @@ def main() -> None:
         raise ValueError("seeds must be a non-empty unique list")
     variants = tuple(dict.fromkeys(args.variants))
 
-    print("WARM-PAIR SHARED-BASELINE RACE", flush=True)
+    print(f"{args.scenario.upper()} SHARED-BASELINE RACE", flush=True)
     print(f"Seeds: {args.seeds}", flush=True)
     print(f"Models: Morgan-only, {', '.join(variants)}", flush=True)
     all_runs: list[Path] = []
     for seed in args.seeds:
-        all_runs.extend(_run_seed(seed, args.drive_root, args.dry_run, variants))
+        all_runs.extend(
+            _run_seed(args.scenario, seed, args.drive_root, args.dry_run, variants)
+        )
     if args.dry_run:
         return
 
-    cohort = ROOT / "artifacts" / "race_runs" / "warm_pair_shared_baseline"
+    cohort = ROOT / "artifacts" / "race_runs" / f"{args.scenario}_shared_baseline"
     if cohort.exists():
         shutil.rmtree(cohort)
     cohort.mkdir(parents=True)
     for run_dir in all_runs:
         shutil.copytree(run_dir, cohort / run_dir.name)
-    report = ROOT / "artifacts" / "reports" / "warm_pair_shared_baseline_race.json"
+    report = (
+        ROOT
+        / "artifacts"
+        / "reports"
+        / f"{args.scenario}_shared_baseline_race.json"
+    )
     _run_live(
         _python(
             "aggregate_ablations.py",
             "--runs", str(cohort),
             "--output", str(report),
-            "--scenario", "warm_pair",
+            "--scenario", args.scenario,
             "--seeds", *(str(seed) for seed in args.seeds),
             "--variants",
             *variants,
