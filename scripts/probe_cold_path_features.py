@@ -128,7 +128,7 @@ def main() -> None:
             break
 
     pair_positive = np.asarray(
-        [str(row.get("observation_status", "")).lower() in {"observed_positive", "positive", "known_positive"} for row in validation_records]
+        [bool(row["is_observed_positive"]) for row in validation_records]
     )
     raw_validation_features = index.transform_records(validation_records)
     permutation = degree_matched_permutation(
