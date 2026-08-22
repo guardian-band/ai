@@ -501,6 +501,12 @@ def preflight_experiment(
 ) -> PreflightPlan:
     """Validate all source contracts and construct only train/validation data."""
 
+    preflight_started = time.perf_counter()
+
+    def report_preflight(stage: str) -> None:
+        elapsed = time.perf_counter() - preflight_started
+        print(f"[preflight] {stage} | elapsed={elapsed:.1f}s", flush=True)
+
     config_path = Path(experiment_config_path).resolve()
     manifest_path = Path(manifest_path).resolve()
     manifest = verify_manifest(str(manifest_path))
@@ -569,10 +575,13 @@ def preflight_experiment(
             feature_artifact=feature, source_hashes=source_hashes,
         )
 
+    report_preflight("student contract checks complete; verifying cached tokens")
     cached_path = _required_path(config_path, config, "cached_token_artifact_path")
     cached_hash = _required_hash(config, "cached_token_artifact_sha256")
     _verify_source(cached_path, cached_hash, "cached-token artifact")
+    report_preflight("cached-token hash verified; loading cached tokens")
     cached = CachedTokenArtifact.load(cached_path)
+    report_preflight("cached tokens loaded; validating teacher selection")
     teacher_selection_path = _required_path(config_path, config, "teacher_selection_path")
     teacher_selection_hash = _required_hash(config, "teacher_selection_sha256")
     teacher_selection = _validate_teacher_selection(
@@ -587,6 +596,7 @@ def preflight_experiment(
         raise ValueError("cached-token artifact teacher selection hash does not match config")
     if cached.metadata.get("teacher_selected_mode") != selected_mode:
         raise ValueError("cached-token artifact teacher selected mode does not match config")
+    report_preflight("teacher selection validated; building student datasets")
     student_train = StudentPairDataset.from_manifest(manifest_path, manifest, "train", cached, hierarchy_path)
     student_validation = StudentPairDataset.from_manifest(manifest_path, manifest, "validation", cached, hierarchy_path)
     student_test_records = load_manifest_records(manifest_path, manifest, "test")
@@ -595,15 +605,18 @@ def preflight_experiment(
         hierarchy_path,
         selected_specific_cuis=[str(label["cui"]) for label in student_test_records.labels],
     )
+    report_preflight("student datasets built; verifying teacher config")
     teacher_config_path = _required_path(config_path, config, "teacher_config_path")
     teacher_config_hash = _required_hash(config, "teacher_config_sha256")
     _verify_source(teacher_config_path, teacher_config_hash, "teacher config")
     teacher_config = load_experiment_config(teacher_config_path)
     if validate_model_type(teacher_config) != "multimodal_teacher":
         raise ValueError("teacher_config_path must declare multimodal_teacher")
+    report_preflight("teacher config verified; loading multimodal feature artifact and datasets")
     teacher_feature, teacher_train, teacher_validation, feature_hashes = _feature_dataset_pair(
         manifest_path, manifest, teacher_config_path, teacher_config, hierarchy_path
     )
+    report_preflight("teacher feature artifact and datasets loaded; verifying checkpoint")
     teacher_checkpoint_path = _required_path(config_path, config, "teacher_checkpoint_path")
     teacher_checkpoint_hash = _required_hash(config, "teacher_checkpoint_sha256")
     _verify_source(teacher_checkpoint_path, teacher_checkpoint_hash, "teacher checkpoint")
@@ -615,6 +628,7 @@ def preflight_experiment(
         raise ValueError(
             "cached-token artifact modality provenance does not match the teacher feature artifact"
         )
+    report_preflight("teacher sources verified; constructing teacher and student models")
     teacher = create_model(teacher_config, num_labels=num_labels)
     checkpoint = torch.load(teacher_checkpoint_path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, Mapping):
@@ -639,6 +653,7 @@ def preflight_experiment(
         raise ValueError("teacher and student training pair order does not match")
     if [record["pair_id"] for record in teacher_validation.records] != [record["pair_id"] for record in student_validation.records]:
         raise ValueError("teacher and student validation pair order does not match")
+    report_preflight("student preflight complete; training will start next")
     source_hashes.update(feature_hashes)
     source_hashes.update(
         {
