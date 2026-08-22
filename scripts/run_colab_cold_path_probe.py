@@ -67,7 +67,12 @@ def main() -> None:
         result = json.loads(report.read_text())
         print("COLD_PATH_PROBE_COMPLETE", flush=True)
         print(f"baseline={result['baseline_validation_macro_auprc']:.9f}", flush=True)
-        print(f"corrected={result['best_correction_validation_macro_auprc']:.9f}", flush=True)
+        print(
+            f"best_trained_correction="
+            f"{result['best_trained_correction_validation_macro_auprc']:.9f}",
+            flush=True,
+        )
+        print(f"selected={result['selected_validation_macro_auprc']:.9f}", flush=True)
         print(f"delta={result['delta']:+.9f}", flush=True)
         print(f"decision={result['decision']}", flush=True)
 
