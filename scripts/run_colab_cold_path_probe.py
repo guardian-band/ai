@@ -47,7 +47,7 @@ def main() -> None:
     report = artifacts / "reports/cold_1_seed_42_directed_path_probe.json"
     backup = args.drive_root / f"{scenario}_seed_{seed}"
     _run_stage(
-        label="directed_path_feature_probe_label_enrichment",
+        label="directed_path_feature_probe_label_specific_v2",
         command=_python(
             "scripts/probe_cold_path_features.py",
             "--experiment", str(config),
