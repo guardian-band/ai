@@ -1245,7 +1245,11 @@ def run_precomputed_experiment(
         )
         teacher_val_ap = _require_defined_macro_ap(_macro_ap(teacher_val_logits, teacher_val_targets))
         max_drop = float(plan.config.get("student_max_validation_ap_drop", 0.005))
-        _validate_student_teacher_ap(student_val_ap, teacher_val_ap, max_drop)
+        validation_delta = student_val_ap - teacher_val_ap
+        minimum_required_ap = teacher_val_ap - max_drop
+        promotion_status = (
+            "accepted" if student_val_ap >= minimum_required_ap else "rejected"
+        )
         student_selection = {
             "candidates": candidate_results,
             "results": candidate_results,
@@ -1253,6 +1257,15 @@ def run_precomputed_experiment(
             "selected_student_validation_macro_ap": student_val_ap,
             "selected_teacher_validation_macro_ap": teacher_val_ap,
             "student_max_validation_ap_drop": max_drop,
+            "student_teacher_validation_macro_ap_delta": validation_delta,
+            "minimum_required_student_validation_macro_ap": minimum_required_ap,
+            "promotion_status": promotion_status,
+            "promotion_reason": (
+                "student retained Teacher validation performance within the configured tolerance"
+                if promotion_status == "accepted"
+                else "student validation performance fell below the configured Teacher-retention threshold"
+            ),
+            "test_metrics_used_for_selection": False,
         }
         _atomic_write_json(run_dir / "student_distillation_selection.json", student_selection)
         resolved.update(
@@ -1268,6 +1281,7 @@ def run_precomputed_experiment(
             }
         )
         (run_dir / "config.resolved.json").write_text(json.dumps(resolved, indent=2))
+        _validate_student_teacher_ap(student_val_ap, teacher_val_ap, max_drop)
         torch.save(model.state_dict(), run_dir / "checkpoint_best.pt")
     else:
         teacher_selection = _train_teacher_two_stage(
