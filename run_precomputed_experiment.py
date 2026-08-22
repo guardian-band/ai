@@ -509,7 +509,9 @@ def preflight_experiment(
 
     config_path = Path(experiment_config_path).resolve()
     manifest_path = Path(manifest_path).resolve()
+    report_preflight("verifying benchmark manifest")
     manifest = verify_manifest(str(manifest_path))
+    report_preflight("benchmark manifest verified; setting seed and loading config")
     # Model construction below initializes randomized parameters.  Seed before
     # creating the model so runs carrying the same manifest seed start from the
     # same weights instead of inheriting process-specific RNG state.
@@ -526,9 +528,11 @@ def preflight_experiment(
             "run_precomputed_experiment supports only multimodal_teacher and distilled_pair_student"
         )
     validate_training_config(config)
+    report_preflight("config validated; loading hierarchy and label contracts")
     hierarchy, hierarchy_hash, hierarchy_path = _load_hierarchy(config_path, config)
     label_order, num_labels = _manifest_label_contract(manifest_path, manifest)
     label_provenance = _manifest_label_provenance(manifest_path, manifest, label_order)
+    report_preflight("hierarchy and label contracts loaded; hashing core sources")
     source_hashes = {
         "experiment_config": _sha256(config_path),
         "manifest_file": _sha256(manifest_path),
