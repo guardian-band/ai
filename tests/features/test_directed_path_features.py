@@ -1,7 +1,11 @@
 import numpy as np
 import pandas as pd
 
-from src.features.directed_path_features import DirectedPathFeatureIndex, degree_matched_permutation
+from src.features.directed_path_features import (
+    DirectedPathFeatureIndex,
+    degree_matched_permutation,
+    label_specific_degree_adjusted_enrichment,
+)
 
 
 def test_directed_features_count_targets_and_ppi_paths():
@@ -32,3 +36,17 @@ def test_degree_matched_permutation_is_deterministic():
     first = degree_matched_permutation(features, positive, degree_column=1, samples=20, seed=7)
     second = degree_matched_permutation(features, positive, degree_column=1, samples=20, seed=7)
     assert first == second
+
+
+def test_label_specific_enrichment_is_fdr_reported_and_deterministic():
+    features = np.zeros((80, 8), dtype=np.float32)
+    targets = np.zeros((80, 2), dtype=bool)
+    targets[:40, 0] = True
+    targets[::2, 1] = True
+    features[:40, 0] = 3.0
+    first = label_specific_degree_adjusted_enrichment(features, targets, ["signal", "noise"])
+    second = label_specific_degree_adjusted_enrichment(features, targets, ["signal", "noise"])
+    assert first == second
+    assert first["fdr_method"] == "Benjamini-Hochberg"
+    assert first["significant_positive_labels"] == 1
+    assert first["top_enrichments"][0]["label"] == "signal"

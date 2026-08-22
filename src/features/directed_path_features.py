@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+from scipy.stats import ttest_ind
 
 from src.data.primekg_typed_graph import LEAKAGE_RELATIONS, REQUIRED_COLUMNS
 
@@ -165,4 +166,85 @@ def degree_matched_permutation(
         "control_pairs": int((~positive).sum()),
         "observed_mean_difference": observed.tolist(),
         "two_sided_p_value": p_values.tolist(),
+    }
+
+
+def label_specific_degree_adjusted_enrichment(
+    features: np.ndarray,
+    targets: np.ndarray,
+    label_names: Iterable[str],
+    *,
+    degree_column: int = 6,
+    feature_count: int = 8,
+    minimum_positives: int = 20,
+) -> dict[str, Any]:
+    """Test per-label enrichment after degree-stratum centering, with BH-FDR."""
+
+    features = np.asarray(features[:, :feature_count], dtype=np.float32)
+    targets = np.asarray(targets, dtype=bool)
+    labels = tuple(map(str, label_names))
+    if targets.ndim != 2 or targets.shape[0] != features.shape[0] or targets.shape[1] != len(labels):
+        raise ValueError("targets must align with feature rows and label names")
+    counts = targets.sum(axis=0)
+    eligible = (counts >= minimum_positives) & (counts <= len(targets) - minimum_positives)
+    quantiles = np.unique(np.quantile(features[:, degree_column], [0, .2, .4, .6, .8, 1]))
+    strata = np.digitize(features[:, degree_column], quantiles[1:-1], right=True)
+    adjusted_features = features.copy()
+    for stratum in np.unique(strata):
+        positions = strata == stratum
+        adjusted_features[positions] -= adjusted_features[positions].mean(axis=0)
+    observed = np.zeros((targets.shape[1], feature_count), dtype=np.float64)
+    p_values = np.ones_like(observed)
+    for label_index in np.flatnonzero(eligible):
+        positive = targets[:, label_index]
+        observed[label_index] = (
+            adjusted_features[positive].mean(axis=0)
+            - adjusted_features[~positive].mean(axis=0)
+        )
+        result = ttest_ind(
+            adjusted_features[positive],
+            adjusted_features[~positive],
+            axis=0,
+            equal_var=False,
+            alternative="greater",
+        )
+        p_values[label_index] = np.nan_to_num(result.pvalue, nan=1.0)
+    p_values[~eligible, :] = 1.0
+
+    # Benjamini-Hochberg across every eligible label-feature hypothesis.
+    flat = p_values.ravel()
+    order = np.argsort(flat)
+    ranked = flat[order]
+    adjusted = ranked * len(ranked) / np.arange(1, len(ranked) + 1)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    q_flat = np.empty_like(adjusted)
+    q_flat[order] = np.minimum(adjusted, 1.0)
+    q_values = q_flat.reshape(p_values.shape)
+    records = []
+    for label_index, label in enumerate(labels):
+        if not eligible[label_index]:
+            continue
+        for feature_index in range(feature_count):
+            records.append(
+                {
+                    "label": label,
+                    "feature_index": feature_index,
+                    "positive_count": int(counts[label_index]),
+                    "mean_difference": float(observed[label_index, feature_index]),
+                    "p_value": float(p_values[label_index, feature_index]),
+                    "q_value": float(q_values[label_index, feature_index]),
+                }
+            )
+    records.sort(key=lambda row: (row["q_value"], -row["mean_difference"], row["label"]))
+    enriched = [row for row in records if row["q_value"] < 0.05 and row["mean_difference"] > 0]
+    return {
+        "minimum_positives": minimum_positives,
+        "eligible_labels": int(eligible.sum()),
+        "hypotheses": len(records),
+        "degree_adjustment": "within-quantile-stratum feature centering",
+        "test": "one-sided Welch t-test",
+        "fdr_method": "Benjamini-Hochberg",
+        "significant_positive_hypotheses": len(enriched),
+        "significant_positive_labels": len({row["label"] for row in enriched}),
+        "top_enrichments": enriched[:25],
     }

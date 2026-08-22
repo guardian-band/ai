@@ -23,6 +23,7 @@ from run_precomputed_experiment import _predict, preflight_experiment  # noqa: E
 from src.features.directed_path_features import (  # noqa: E402
     DirectedPathFeatureIndex,
     degree_matched_permutation,
+    label_specific_degree_adjusted_enrichment,
 )
 
 
@@ -135,13 +136,17 @@ def main() -> None:
         raw_validation_features, pair_positive, samples=args.permutations, seed=seed
     )
     permutation["feature_names"] = list(index.feature_names)
+    label_enrichment = label_specific_degree_adjusted_enrichment(
+        raw_validation_features,
+        validation_targets,
+        labels,
+    )
+    for row in label_enrichment["top_enrichments"]:
+        row["feature"] = index.feature_names[row.pop("feature_index")]
     delta = best_ap - baseline_ap
     if delta >= 0.002:
         decision = "develop_pair_conditioned_teacher"
-    elif any(
-        p < 0.05 and difference > 0
-        for p, difference in zip(permutation["two_sided_p_value"], permutation["observed_mean_difference"])
-    ):
+    elif label_enrichment["significant_positive_labels"] > 0:
         decision = "consider_one_small_emergnn_prototype"
     else:
         decision = "stop_expensive_graph_model"
@@ -156,6 +161,7 @@ def main() -> None:
         "decision": decision,
         "history": history,
         "degree_matched_positive_control_permutation": permutation,
+        "label_specific_degree_matched_enrichment": label_enrichment,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
