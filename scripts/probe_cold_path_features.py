@@ -140,6 +140,7 @@ def main() -> None:
         raw_validation_features,
         validation_targets,
         labels,
+        pair_positive,
     )
     for row in label_enrichment["top_enrichments"]:
         row["feature"] = index.feature_names[row.pop("feature_index")]

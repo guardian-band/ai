@@ -173,30 +173,49 @@ def label_specific_degree_adjusted_enrichment(
     features: np.ndarray,
     targets: np.ndarray,
     label_names: Iterable[str],
+    pair_positive: np.ndarray,
     *,
     degree_column: int = 6,
     feature_count: int = 8,
     minimum_positives: int = 20,
 ) -> dict[str, Any]:
-    """Test per-label enrichment after degree-stratum centering, with BH-FDR."""
+    """Test label-specific enrichment only among observed-positive DDI pairs.
+
+    For each label, graph features are residualized against graph degree and the
+    number of *other* labels on the pair. This prevents the result from merely
+    rediscovering the observed-positive/control split or overall label burden.
+    """
 
     features = np.asarray(features[:, :feature_count], dtype=np.float32)
     targets = np.asarray(targets, dtype=bool)
+    pair_positive = np.asarray(pair_positive, dtype=bool)
     labels = tuple(map(str, label_names))
     if targets.ndim != 2 or targets.shape[0] != features.shape[0] or targets.shape[1] != len(labels):
         raise ValueError("targets must align with feature rows and label names")
+    if pair_positive.shape != (features.shape[0],):
+        raise ValueError("pair_positive must align with feature rows")
+    if not pair_positive.any():
+        raise ValueError("label-specific enrichment requires observed-positive pairs")
+
+    features = features[pair_positive]
+    targets = targets[pair_positive]
     counts = targets.sum(axis=0)
-    eligible = (counts >= minimum_positives) & (counts <= len(targets) - minimum_positives)
-    quantiles = np.unique(np.quantile(features[:, degree_column], [0, .2, .4, .6, .8, 1]))
-    strata = np.digitize(features[:, degree_column], quantiles[1:-1], right=True)
-    adjusted_features = features.copy()
-    for stratum in np.unique(strata):
-        positions = strata == stratum
-        adjusted_features[positions] -= adjusted_features[positions].mean(axis=0)
+    eligible = (counts >= minimum_positives) & ((len(targets) - counts) >= minimum_positives)
+    total_label_burden = targets.sum(axis=1).astype(np.float64)
     observed = np.zeros((targets.shape[1], feature_count), dtype=np.float64)
     p_values = np.ones_like(observed)
     for label_index in np.flatnonzero(eligible):
         positive = targets[:, label_index]
+        other_label_burden = total_label_burden - positive.astype(np.float64)
+        design = np.column_stack(
+            [
+                np.ones(len(features)),
+                np.log1p(features[:, degree_column].astype(np.float64)),
+                other_label_burden,
+            ]
+        )
+        coefficients, *_ = np.linalg.lstsq(design, features.astype(np.float64), rcond=None)
+        adjusted_features = features.astype(np.float64) - design @ coefficients
         observed[label_index] = (
             adjusted_features[positive].mean(axis=0)
             - adjusted_features[~positive].mean(axis=0)
@@ -239,9 +258,11 @@ def label_specific_degree_adjusted_enrichment(
     enriched = [row for row in records if row["q_value"] < 0.05 and row["mean_difference"] > 0]
     return {
         "minimum_positives": minimum_positives,
+        "comparison_population": "observed-positive DDI pairs only",
+        "observed_positive_pairs": int(pair_positive.sum()),
         "eligible_labels": int(eligible.sum()),
         "hypotheses": len(records),
-        "degree_adjustment": "within-quantile-stratum feature centering",
+        "confounder_adjustment": "OLS residualization by log graph degree and other-label burden",
         "test": "one-sided Welch t-test",
         "fdr_method": "Benjamini-Hochberg",
         "significant_positive_hypotheses": len(enriched),

@@ -39,14 +39,24 @@ def test_degree_matched_permutation_is_deterministic():
 
 
 def test_label_specific_enrichment_is_fdr_reported_and_deterministic():
-    features = np.zeros((80, 8), dtype=np.float32)
-    targets = np.zeros((80, 2), dtype=bool)
+    features = np.zeros((120, 8), dtype=np.float32)
+    targets = np.zeros((120, 2), dtype=bool)
+    pair_positive = np.zeros(120, dtype=bool)
+    pair_positive[:80] = True
     targets[:40, 0] = True
-    targets[::2, 1] = True
+    targets[:80:2, 1] = True
     features[:40, 0] = 3.0
-    first = label_specific_degree_adjusted_enrichment(features, targets, ["signal", "noise"])
-    second = label_specific_degree_adjusted_enrichment(features, targets, ["signal", "noise"])
+    # Controls have a large generic graph signal. They must not influence the
+    # label-specific comparison because only observed-positive DDIs are used.
+    features[80:, 1] = 20.0
+    first = label_specific_degree_adjusted_enrichment(
+        features, targets, ["signal", "noise"], pair_positive
+    )
+    second = label_specific_degree_adjusted_enrichment(
+        features, targets, ["signal", "noise"], pair_positive
+    )
     assert first == second
     assert first["fdr_method"] == "Benjamini-Hochberg"
     assert first["significant_positive_labels"] == 1
     assert first["top_enrichments"][0]["label"] == "signal"
+    assert first["comparison_population"] == "observed-positive DDI pairs only"
