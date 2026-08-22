@@ -4,7 +4,9 @@ import pandas as pd
 from src.features.directed_path_features import (
     DirectedPathFeatureIndex,
     degree_matched_permutation,
+    deduplicate_feature_columns,
     label_specific_degree_adjusted_enrichment,
+    label_specific_morgan_residual_enrichment,
 )
 
 
@@ -60,3 +62,26 @@ def test_label_specific_enrichment_is_fdr_reported_and_deterministic():
     assert first["significant_positive_labels"] == 1
     assert first["top_enrichments"][0]["label"] == "signal"
     assert first["comparison_population"] == "observed-positive DDI pairs only"
+
+
+def test_residual_enrichment_deduplicates_and_finds_complementary_signal():
+    rows = 120
+    targets = np.zeros((rows, 2), dtype=bool)
+    pair_positive = np.ones(rows, dtype=bool)
+    targets[:60, 0] = True
+    targets[::2, 1] = True
+    probabilities = np.full((rows, 2), 0.5, dtype=np.float64)
+    features = np.zeros((rows, 5), dtype=np.float64)
+    features[:60, 0] = 1.0
+    features[:, 1] = features[:, 0]
+    features[:, 2] = np.linspace(0, 2, rows)
+    features[:, 3] = features[:, 2]
+    features[:, 4] = 1.0
+    names = ["signal", "signal_copy", "mean_protein_degree", "degree_copy", "connected_within_three_hops"]
+    result = label_specific_morgan_residual_enrichment(
+        features, targets, probabilities, ["label_a", "label_b"], pair_positive, names
+    )
+    assert result["equivalent_feature_aliases"]["signal_copy"] == "signal"
+    assert result["equivalent_feature_aliases"]["degree_copy"] == "mean_protein_degree"
+    assert result["significant_positive_labels"] == 1
+    assert result["top_residual_enrichments"][0]["label"] == "label_a"

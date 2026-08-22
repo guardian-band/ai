@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+from scipy.stats import t as student_t
 from scipy.stats import ttest_ind
 
 from src.data.primekg_typed_graph import LEAKAGE_RELATIONS, REQUIRED_COLUMNS
@@ -268,4 +269,148 @@ def label_specific_degree_adjusted_enrichment(
         "significant_positive_hypotheses": len(enriched),
         "significant_positive_labels": len({row["label"] for row in enriched}),
         "top_enrichments": enriched[:25],
+    }
+
+
+def deduplicate_feature_columns(
+    features: np.ndarray, feature_names: Iterable[str]
+) -> tuple[np.ndarray, tuple[str, ...], dict[str, str]]:
+    """Remove exactly equivalent feature columns and record their canonical name."""
+
+    values = np.asarray(features)
+    names = tuple(map(str, feature_names))
+    if values.ndim != 2 or values.shape[1] != len(names):
+        raise ValueError("features must align with feature names")
+    kept: list[int] = []
+    aliases: dict[str, str] = {}
+    for index, name in enumerate(names):
+        duplicate = next(
+            (prior for prior in kept if np.allclose(values[:, index], values[:, prior], rtol=0, atol=1e-8)),
+            None,
+        )
+        if duplicate is None:
+            kept.append(index)
+        else:
+            aliases[name] = names[duplicate]
+    return values[:, kept], tuple(names[index] for index in kept), aliases
+
+
+def label_specific_morgan_residual_enrichment(
+    features: np.ndarray,
+    targets: np.ndarray,
+    probabilities: np.ndarray,
+    label_names: Iterable[str],
+    pair_positive: np.ndarray,
+    feature_names: Iterable[str],
+    *,
+    degree_feature: str = "mean_protein_degree",
+    minimum_positives: int = 20,
+) -> dict[str, Any]:
+    """Test whether graph features explain label residuals beyond frozen Morgan.
+
+    Tests are limited to observed-positive DDI pairs. For every label-feature
+    hypothesis, an OLS model predicts ``truth - Morgan probability`` while
+    controlling for log graph degree and the number of other labels on the pair.
+    Equivalent graph feature columns are removed before BH-FDR correction.
+    """
+
+    features = np.asarray(features, dtype=np.float64)
+    targets = np.asarray(targets, dtype=bool)
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    pair_positive = np.asarray(pair_positive, dtype=bool)
+    labels = tuple(map(str, label_names))
+    names = tuple(map(str, feature_names))
+    if targets.shape != probabilities.shape or targets.shape != (len(features), len(labels)):
+        raise ValueError("targets, probabilities, features, and labels must align")
+    if pair_positive.shape != (len(features),):
+        raise ValueError("pair_positive must align with feature rows")
+
+    features, names, aliases = deduplicate_feature_columns(features, names)
+    if degree_feature not in names:
+        canonical_degree = aliases.get(degree_feature)
+        if canonical_degree is None:
+            raise ValueError(f"missing degree feature: {degree_feature}")
+        degree_feature = canonical_degree
+    degree_column = names.index(degree_feature)
+    connected_column = names.index("connected_within_three_hops")
+
+    selected = pair_positive
+    values = features[selected]
+    truth = targets[selected]
+    probs = probabilities[selected]
+    residuals = truth.astype(np.float64) - probs
+    total_label_burden = truth.sum(axis=1).astype(np.float64)
+    counts = truth.sum(axis=0)
+    eligible = (counts >= minimum_positives) & ((len(truth) - counts) >= minimum_positives)
+    records: list[dict[str, Any]] = []
+    for label_index in np.flatnonzero(eligible):
+        other_label_burden = total_label_burden - truth[:, label_index].astype(np.float64)
+        for feature_index, feature_name in enumerate(names):
+            if feature_name in {degree_feature, "connected_within_three_hops"}:
+                continue
+            design = np.column_stack(
+                [
+                    np.ones(len(values)),
+                    values[:, feature_index],
+                    np.log1p(values[:, degree_column]),
+                    other_label_burden,
+                ]
+            )
+            if np.linalg.matrix_rank(design) < design.shape[1]:
+                continue
+            coefficients, *_ = np.linalg.lstsq(design, residuals[:, label_index], rcond=None)
+            errors = residuals[:, label_index] - design @ coefficients
+            degrees_of_freedom = len(values) - design.shape[1]
+            variance = float(errors @ errors) / degrees_of_freedom
+            covariance = variance * np.linalg.inv(design.T @ design)
+            standard_error = float(np.sqrt(max(covariance[1, 1], 0.0)))
+            coefficient = float(coefficients[1])
+            statistic = coefficient / standard_error if standard_error > 0 else 0.0
+            p_value = float(student_t.sf(statistic, degrees_of_freedom)) if standard_error > 0 else 1.0
+            records.append(
+                {
+                    "label": labels[label_index],
+                    "feature": feature_name,
+                    "positive_count": int(counts[label_index]),
+                    "coefficient": coefficient,
+                    "p_value": p_value,
+                }
+            )
+
+    if records:
+        p_values = np.asarray([row["p_value"] for row in records])
+        order = np.argsort(p_values)
+        ranked = p_values[order]
+        adjusted = ranked * len(ranked) / np.arange(1, len(ranked) + 1)
+        adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+        q_values = np.empty_like(adjusted)
+        q_values[order] = np.minimum(adjusted, 1.0)
+        for row, q_value in zip(records, q_values, strict=True):
+            row["q_value"] = float(q_value)
+    records.sort(key=lambda row: (row.get("q_value", 1.0), -row["coefficient"], row["label"]))
+    enriched = [row for row in records if row.get("q_value", 1.0) < 0.05 and row["coefficient"] > 0]
+
+    connected = values[:, connected_column] > 0
+    split_report = {}
+    for name, mask in (("connected", connected), ("disconnected", ~connected)):
+        split_residuals = residuals[mask]
+        split_report[name] = {
+            "pairs": int(mask.sum()),
+            "mean_residual": float(split_residuals.mean()) if mask.any() else None,
+            "mean_absolute_residual": float(np.abs(split_residuals).mean()) if mask.any() else None,
+        }
+    return {
+        "comparison_population": "observed-positive DDI pairs only",
+        "target": "truth_minus_frozen_morgan_probability",
+        "confounder_adjustment": "OLS with log graph degree and other-label burden",
+        "minimum_positives": minimum_positives,
+        "eligible_labels": int(eligible.sum()),
+        "deduplicated_feature_names": list(names),
+        "equivalent_feature_aliases": aliases,
+        "hypotheses": len(records),
+        "fdr_method": "Benjamini-Hochberg",
+        "significant_positive_hypotheses": len(enriched),
+        "significant_positive_labels": len({row["label"] for row in enriched}),
+        "connected_disconnected": split_report,
+        "top_residual_enrichments": enriched[:25],
     }

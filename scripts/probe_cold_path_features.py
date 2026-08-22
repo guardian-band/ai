@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from run_precomputed_experiment import _predict, preflight_experiment  # noqa: E402
 from src.features.directed_path_features import (  # noqa: E402
     DirectedPathFeatureIndex,
+    label_specific_morgan_residual_enrichment,
     degree_matched_permutation,
     label_specific_degree_adjusted_enrichment,
 )
@@ -144,10 +145,25 @@ def main() -> None:
     )
     for row in label_enrichment["top_enrichments"]:
         row["feature"] = index.feature_names[row.pop("feature_index")]
+    validation_probabilities = 1 / (1 + np.exp(-np.clip(validation_logits, -30, 30)))
+    residual_enrichment = label_specific_morgan_residual_enrichment(
+        raw_validation_features[:, :8],
+        validation_targets,
+        validation_probabilities,
+        labels,
+        pair_positive,
+        index.feature_names[:8],
+    )
+    candidate_labels = {row["label"] for row in label_enrichment["top_enrichments"]}
+    residual_labels = {
+        row["label"] for row in residual_enrichment["top_residual_enrichments"]
+    }
+    residual_enrichment["previous_candidate_labels"] = sorted(candidate_labels)
+    residual_enrichment["retained_candidate_labels"] = sorted(candidate_labels & residual_labels)
     delta = best_ap - baseline_ap
     if delta >= 0.002:
         decision = "develop_pair_conditioned_teacher"
-    elif label_enrichment["significant_positive_labels"] > 0:
+    elif residual_enrichment["significant_positive_labels"] > 0:
         decision = "consider_one_small_emergnn_prototype"
     else:
         decision = "stop_expensive_graph_model"
@@ -156,13 +172,18 @@ def main() -> None:
         "graph_semantics": "directed_with_explicit_inverse_relation_identity",
         "feature_names": list(index.feature_names),
         "baseline_validation_macro_auprc": baseline_ap,
-        "best_correction_validation_macro_auprc": best_ap,
+        "best_trained_correction_validation_macro_auprc": max(
+            row["validation_macro_auprc"] for row in history
+        ),
+        "selected_validation_macro_auprc": best_ap,
+        "selection_note": "Morgan fallback is selected when every trained correction is worse",
         "delta": delta,
         "promotion_threshold": 0.002,
         "decision": decision,
         "history": history,
         "degree_matched_positive_control_permutation": permutation,
         "label_specific_degree_matched_enrichment": label_enrichment,
+        "label_specific_morgan_residual_enrichment": residual_enrichment,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
