@@ -293,9 +293,14 @@ def evaluate_similarity_transfer(
             str(k): {"macro_auprc": value[1], "micro_auprc": value[2], "transfer_coverage": value[3]}
             for k, value in candidates.items()
         },
-        "nearest_train_similarity": {
+        "per_drug_nearest_train_similarity_including_known_endpoints": {
             "mean": float(np.mean([nearest[d][0][1] for d in needed if nearest.get(d)])),
             "minimum": float(np.min([nearest[d][0][1] for d in needed if nearest.get(d)])),
+        },
+        "per_pair_minimum_endpoint_similarity": {
+            "mean": float(pair_similarity.mean()),
+            "minimum": float(pair_similarity.min()),
+            "definition": "minimum endpoint nearest-training Morgan similarity; known endpoints equal 1.0",
         },
         "performance_by_pair_nearest_train_similarity": similarity_strata,
     }

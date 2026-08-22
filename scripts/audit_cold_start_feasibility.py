@@ -37,21 +37,20 @@ def main() -> None:
     similarity = evaluate_similarity_transfer(pairs, triples, labels, morgan)
     reference = args.reference_morgan_macro_auprc
     similarity_delta = None if reference is None else similarity.report["macro_auprc"] - reference
-    val_coverage = path_report["splits"]["validation"]["coverage"]
-    no_signal = val_coverage == 0.0 and similarity_delta is not None and similarity_delta <= 0.0
     report = {
         "scenario": manifest.get("scenario"),
         "seed": manifest.get("seed"),
         "selection_policy": {
             "uses_test_for_model_selection": False,
             "promotion_delta_macro_auprc": 0.002,
-            "no_go_only_if_no_safe_paths_and_similarity_does_not_beat_morgan": True,
+            "path_existence_is_not_predictive_evidence": True,
+            "next_gate": "directed_path_feature_correction_probe",
         },
         "safe_path_audit": path_report,
         "similarity_transfer": similarity.report,
         "reference_morgan_validation_macro_auprc": reference,
         "similarity_delta_vs_reference": similarity_delta,
-        "recommendation": "stop_expensive_path_model" if no_signal else "pair_conditioned_teacher_is_feasible",
+        "recommendation": "run_cheap_predictive_path_probe_before_teacher",
         "limitations": [
             "Similarity k is selected on validation and is exploratory, not a final test estimate.",
             "Temporal evaluation requires a separately sourced approval-date artifact.",
