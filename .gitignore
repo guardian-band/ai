@@ -32,3 +32,6 @@ artifacts/splits/
 # Logs & Temp
 *.log
 scratch/
+
+# Local API release package (contains large model binaries)
+model-release/
