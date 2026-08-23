@@ -34,6 +34,11 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
+    parser.add_argument(
+        "--onnx-dir",
+        type=Path,
+        help="Optional verified ONNX directory containing both graphs and metadata.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -41,6 +46,7 @@ def main() -> None:
     manifest = args.manifest.resolve()
     checkpoint = args.checkpoint.resolve()
     selection = args.selection.resolve()
+    onnx_dir = args.onnx_dir.resolve() if args.onnx_dir else None
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     config = yaml.safe_load(experiment.read_text(encoding="utf-8"))
@@ -64,6 +70,13 @@ def main() -> None:
         _copy(checkpoint, temporary / "checkpoint_best.pt")
         _copy(selection, temporary / "teacher_validation_selection.json")
         shutil.copytree(manifest.parent, temporary / "benchmark", dirs_exist_ok=True)
+        if onnx_dir is not None:
+            for name in (
+                "teacher_fused.onnx",
+                "teacher_baseline.onnx",
+                "onnx_release.json",
+            ):
+                _copy(onnx_dir / name, temporary / "onnx" / name)
 
         config["feature_artifact_path"] = "feature_artifact.npz"
         config["hierarchy_path"] = "meddra_hierarchy.json"
@@ -86,6 +99,32 @@ def main() -> None:
                 "manifest": _sha256(temporary / "benchmark" / "manifest.json"),
             },
         }
+        if onnx_dir is not None:
+            onnx_metadata = json.loads(
+                (temporary / "onnx" / "onnx_release.json").read_text(encoding="utf-8")
+            )
+            expected_sources = onnx_metadata.get("source_sha256", {})
+            if expected_sources.get("checkpoint") != metadata["sha256"]["checkpoint"]:
+                raise ValueError("ONNX/checkpoint source hash mismatch")
+            if expected_sources.get("selection") != metadata["sha256"]["selection"]:
+                raise ValueError("ONNX/selection source hash mismatch")
+            expected_onnx = onnx_metadata.get("onnx_sha256", {})
+            actual_onnx = {
+                "fused": _sha256(temporary / "onnx" / "teacher_fused.onnx"),
+                "baseline": _sha256(temporary / "onnx" / "teacher_baseline.onnx"),
+            }
+            if expected_onnx != actual_onnx:
+                raise ValueError("ONNX graph hash mismatch")
+            metadata["runtimes"] = {
+                "default": "onnx",
+                "available": ["onnx", "pytorch"],
+                "onnx": {
+                    "fused": "onnx/teacher_fused.onnx",
+                    "baseline": "onnx/teacher_baseline.onnx",
+                    "metadata": "onnx/onnx_release.json",
+                    "sha256": actual_onnx,
+                },
+            }
         (temporary / "release.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

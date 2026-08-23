@@ -3,12 +3,16 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    POLYPHARMACY_RUNTIME=onnx \
     POLYPHARMACY_DEVICE=cpu \
     POLYPHARMACY_CPU_THREADS=1 \
     POLYPHARMACY_EXPERIMENT_PATH=/models/teacher.yaml \
     POLYPHARMACY_MANIFEST_PATH=/models/benchmark/manifest.json \
     POLYPHARMACY_CHECKPOINT_PATH=/models/checkpoint_best.pt \
-    POLYPHARMACY_SELECTION_PATH=/models/teacher_validation_selection.json
+    POLYPHARMACY_SELECTION_PATH=/models/teacher_validation_selection.json \
+    POLYPHARMACY_ONNX_FUSED_PATH=/models/onnx/teacher_fused.onnx \
+    POLYPHARMACY_ONNX_BASELINE_PATH=/models/onnx/teacher_baseline.onnx \
+    POLYPHARMACY_ONNX_RELEASE_PATH=/models/onnx/onnx_release.json
 
 WORKDIR /app
 
@@ -23,7 +27,7 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=150s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"
 
 CMD ["uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

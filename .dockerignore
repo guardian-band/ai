@@ -4,6 +4,7 @@ __pycache__
 .pytest_cache
 artifacts
 data
+model-release
 *.zip
 *.pt
 *.npz

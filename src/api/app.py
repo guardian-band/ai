@@ -41,6 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="model is not ready")
         return ReadinessResponse(
             status="ready",
+            runtime=service.runtime,
             device=str(service.device),
             selected_mode=service.selected_mode,
             supported_drugs=len(service.drug_ids),
@@ -52,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service: ModelService = request.app.state.model_service
         return ModelInfoResponse(
             model="warm_morgan_mpnn_teacher",
+            runtime=service.runtime,
             selected_mode=service.selected_mode,
             device=str(service.device),
             supported_drugs=len(service.drug_ids),

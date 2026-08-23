@@ -48,6 +48,7 @@ class HealthResponse(BaseModel):
 
 class ReadinessResponse(BaseModel):
     status: Literal["ready"]
+    runtime: Literal["pytorch", "onnx"]
     device: str
     selected_mode: str
     supported_drugs: int
@@ -56,6 +57,7 @@ class ReadinessResponse(BaseModel):
 
 class ModelInfoResponse(BaseModel):
     model: str
+    runtime: Literal["pytorch", "onnx"]
     selected_mode: str
     device: str
     supported_drugs: int
